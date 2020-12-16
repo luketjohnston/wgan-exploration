@@ -1,0 +1,91 @@
+
+1. encode state as vector
+
+2. "goalsetter" takes state as input and outputs a "goal"
+-> reward is environment rewards
+-> probably need some intrinsic reward here also, for sparse reward settings
+
+3. "actor" takes state and goal as inputs, and outputs an action
+-> reward is state moving toward goal
+
+
+There's some nebulous idea where instead of directly generating a goal, we have a
+reward-predictor (Q-value or whatever) and then just search until the reward-predictor predicts
+high reward. Could also have something in here where the reward-predictor is biased to believe
+there exists states with high reward... like just add training data where a randomly selected state
+has some modest reward over and over again, or something like that.
+
+
+
+
+
+The problem with the above approach is that I don't see an easy way to add intrinsic rewards to the goal setter.
+Since we are taking a state as input to produce the goal, we can't add random goals with positive rewards. In order to
+do this, we most likely need the goal to be an input to something - so we need a network that predicts the value of a 
+particular goal. At first I thought this meant the network has to just predict the reward of a given (encoded) state, 
+but that wouldn't work because then we would end up with un-achievable states all the time (for example, in montezuma's revenge,
+if we learn that the state right before achieving the first reward is a good goal, then we may generate that goal AFTER we've
+already reached it, at which point it is impossible to achieve again). 
+  Two possible solutions to this:
+   1. a network that estimates the "distance" from a current state to the goal. I'm not sure how to proceed with this, it seems 
+      difficult to train. There's a possibility here of just enforcing the states to represent distance, but again this seems
+      tricky. I doubt this approach is impossible, but the second seems more realistic to me:
+   2. predict reward of a goal state GIVEN current state. 
+   OK what I was thinking of before melee:: in real life, the small rewards from montezuma don't actually matter that much. 
+   A person plays entirely for the intrinsic rewards of discovering the whole game. But if we do this then there's an odd situation
+   where agent at beginning figures out how many parts of the game work, and then there's no novel reward until wayyy into the future
+
+
+With #2 above, we have the below structure
+
+
+- Autoencoder to encode state as vector
+
+- Q-network predicts discounted rewards given GOAL and STATE
+
+- Actor takes state and goal as input and outputs action. Rewards of the actor are moving state space toward the goal
+
+    possible alternative: rewards of actor are ACHIEVING the goal. this, however, seems to lead to a problem where the 
+    goalsetter cannot update the goal at every timestep - it has to wait for the actor to either achieve the goal, 
+    or fail. "failure" here is a bit awkward to define, but one idea would be that the actor fails if the expected reward
+    of the goal given the state is reduced below a certain value. Then, if the agent is training while it is acting,
+    if it takes too long to achieve the goal it would just train the goal down to a negligible reward and then pick a new goal. 
+    This seems to have a kind of failure mode where it could constantly pick unachievable goals though, and then the actor never
+    gets the training it needs...
+
+
+- goal generation is achieved by randomly generating some number of goals, and picking the one with the highest predicted reward
+- "optimism" is achieved by adding random goals to the training data, with positive rewards. 
+
+
+
+
+MAYBE THERE'S A MUCH SIMPLER VERSION OF THIS IDEA, WITHOUT GOALS, JUST FOCUSED ON "OPTIMISM"
+
+We just do the standard q-network for RL, with experience replay, but with an autoencoder for states first, and
+we supplement the replay with random states with positive rewards
+... hmm this seems like it actually kinda needs the "goal" state. Otherwise, we end up with an "explored" area with enough 
+experience that we know all the transitions are low reward, and no incentive to explore "toward" the unexplored area. How did the original paper do it?
+ACTUALLY, I think it should work. the fake optimistic rewards will backpropogate whenever we find them and the agent should learn to seek out
+such rewards.... worth a shot at least. Keep it simple at first.
+
+
+QUESTION: for the autoencoder, what happens if we use the KL divergence loss and variational encoding, without a decoding step?
+          then the gradients to the state have to come from the action... eh I don't like it.
+
+QUESTION: I don't really understand the theory behind KL divergence, it seems weird as a regularization term. It would make
+  more sense to me to, for example, enforce that the sampled values have a certain distribution (rather than the means and sigmas).
+
+
+Two separate experience replay streams:
+One, for the autoencoder - this one we just want as many different types of inputs as possible. 
+Two, for the agent - this one we train with on-policy data, but add our optimistic bias data as well
+
+
+these settings for ~330 loss (no KL divergence weight)
+BATCH_SIZE = 128
+LEARNING_RATE = 0.000001
+ENCODING_SIZE = 256
+FILTERS = [8,8,8,8]
+CHANNELS = [32,64,64,64]
+STRIDES = [2,2,1,1]
