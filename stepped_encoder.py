@@ -28,6 +28,7 @@ HEIGHT = 110
 DEPTH = 4
 
 LEARNING_RATE = 0.000001
+EPSILON = 1e-3
 ENCODING_SIZE = 256
 FILTERS = [8,8,8,8]
 CHANNELS = [32,64,64,64]
@@ -63,7 +64,7 @@ class Encoder(Model):
     
     for (f, c, s) in zip(FILTERS, CHANNELS, STRIDES):
       # first conv layer
-      self.conv_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(f,f,size[2],c))))
+      self.conv_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(f,f,size[2],c)), name='conv'))
       self.strides.append(s)
       size = getConvOutputSize(size[0], size[1], f, c, s)
       self.conv_sizes.append(size)
@@ -74,20 +75,26 @@ class Encoder(Model):
 
     # first fully connected layer
     # TODO experiment with size of this layer
-    self.dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(self.conv_out_flat_size,256))))
-    self.dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(256,))))
+    self.dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(self.conv_out_flat_size,256)), name='w0'))
+    self.dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(256,)), name='b0'))
 
     # output layer
-    self.dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(256,ENCODING_SIZE))))
-    self.dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE,))))
+    self.dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(256,ENCODING_SIZE)), name='w1'))
+    self.dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE,)), name='b1'))
 
+
+    # background dense layers
+    self.decode_dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE//2,32)), name='decode_w0'))
+    self.decode_dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(32,)), name='decode_b0'))
+    self.decode_dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(32,WIDTH * HEIGHT)), name='decode_w1'))
+    self.decode_dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(WIDTH * HEIGHT,)), name='decode_b1'))
 
     # fully connected 1
-    self.decode_dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE//2,256))))
-    self.decode_dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(256,))))
+    self.decode_dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE//2,256)), name='decode_w2'))
+    self.decode_dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(256,)), name='decode_b2'))
     # fully connected 2, output is reshaped to image and then resized upward
-    self.decode_dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(256,self.conv_out_flat_size))))
-    self.decode_dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(self.conv_out_flat_size,))))
+    self.decode_dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(256,self.conv_out_flat_size)), name='decode_w3'))
+    self.decode_dense_vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(self.conv_out_flat_size,)), name='decode_b3'))
 
     c0 = 4
     decode_conv_vars = []
@@ -127,10 +134,22 @@ class Encoder(Model):
 
   @tf.function(input_signature=(tf.TensorSpec(shape=[None, ENCODING_SIZE//2]),))
   def decode(self, sample):
+
+    # first "step" is dense layer directly from encoding to output image,
+    # and is stacked to produce the 4-timestep output. This allows the model
+    # to easily learn the "background" image (the room)
+    background = tf.einsum('bi,io->bo', sample, self.decode_dense_vars[0]) + self.decode_dense_vars[1]
+    background = tf.nn.relu(background)
+    background = tf.einsum('bi,io->bo', background, self.decode_dense_vars[2]) + self.decode_dense_vars[3]
+    # TODO remove, this is just a test
+    #background = self.decode_dense_vars[3]
+    background = tf.reshape(background, [-1, WIDTH, HEIGHT, 1])
+    background = tf.repeat(background, 4, 3)
+
     # first linear layer
-    x = tf.einsum('bi,io->bo', sample, self.decode_dense_vars[0]) + self.decode_dense_vars[1]
+    x = tf.einsum('bi,io->bo', sample, self.decode_dense_vars[4]) + self.decode_dense_vars[5]
     x = tf.nn.relu(x)
-    x = tf.einsum('bi,io->bo', x, self.decode_dense_vars[2]) + self.decode_dense_vars[3]
+    x = tf.einsum('bi,io->bo', x, self.decode_dense_vars[6]) + self.decode_dense_vars[7]
     # reshape to look like image with channels
     x = tf.reshape(x, [-1] + list(self.conv_sizes[-1])) 
     # resize upward to the size of the second to last convolution(which was the first)
@@ -140,8 +159,12 @@ class Encoder(Model):
       x = tf.image.resize(x, s[:-1])
       x = tf.nn.conv2d(x, v, 1, 'SAME') # always stride 1 on decode? TODO
 
+    x = tf.nn.sigmoid(x) # restrict logits to (0,1),
+    background = tf.nn.sigmoid(background)
+    x = x + background
+
     # TODO Should I instead restrict image inputs and outputs to (0,1) to compare, so loss is smaller?
-    x = 255 * tf.nn.sigmoid(x) # restrict logits to (0,1), and then multiply by 255, since it's an image.
+    x = 255.0*x
     return x
 
   @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),))
@@ -181,7 +204,7 @@ if __name__ == '__main__':
 
   # have to do this once before saving model maybe?
   env = gym.make('MontezumaRevenge-v0')
-  opt = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
+  opt = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE, epsilon=EPSILON)
 
   state1 = env.reset()
   state2 = env.step(env.action_space.sample())[0]

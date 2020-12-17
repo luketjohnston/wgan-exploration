@@ -9,9 +9,9 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
 
-from agent import *
+from stepped_encoder import *
 
-SAVE = 200
+SAVE = 100
 BATCH_SIZE = 128
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -41,11 +41,15 @@ with open(loss_savepath, "rb") as f:
 encoder = tf.saved_model.load(model_savepath)
 
 # TODO should I save and load the optimizer?
-opt = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
+opt = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE, epsilon=EPSILON)
+opt = tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE)
+opt = tf.keras.optimizers.SGD(learning_rate=0.000001)
 
 
 
-for b in range(100000):
+b = 0
+while True:
+  b += 1
 
   batchlist = []
 
@@ -54,20 +58,20 @@ for b in range(100000):
   #plt.imshow(original, cmap=cm.gray)
   #plt.show()
 
-  if b % 4000 == 3999:
-    mystate = tf.expand_dims(state, 0)
-    image = encoder.autoencode(mystate)
-    image = image[:,:,:,0]
-    image = tf.squeeze(image)
-    print(image[44,:])
+  #if b % 4000 == 3999:
+  #  mystate = tf.expand_dims(state, 0)
+  #  image = encoder.autoencode(mystate)
+  #  image = image[:,:,:,0]
+  #  image = tf.squeeze(image)
+  #  print(image[44,:])
  
-    # original image show first
-    original = tf.squeeze(state[:,:,0])
-    plt.imshow(original, cmap=cm.gray)
-    #plt.show()
+  #  # original image show first
+  #  original = tf.squeeze(state[:,:,0])
+  #  plt.imshow(original, cmap=cm.gray)
+  #  #plt.show()
 
-    plt.imshow(image, cmap=cm.gray)
-    plt.show()
+  #  plt.imshow(image, cmap=cm.gray)
+  #  plt.show()
 
   for i in range(BATCH_SIZE):
     statelist.pop(0)

@@ -82,10 +82,13 @@ One, for the autoencoder - this one we just want as many different types of inpu
 Two, for the agent - this one we train with on-policy data, but add our optimistic bias data as well
 
 
-these settings for ~330 loss (no KL divergence weight)
+these settings for ~230 loss (no KL divergence weight)
 BATCH_SIZE = 128
 LEARNING_RATE = 0.000001
 ENCODING_SIZE = 256
 FILTERS = [8,8,8,8]
 CHANNELS = [32,64,64,64]
 STRIDES = [2,2,1,1]
+
+
+230 LOSS doesn't have any state-specific information it seems. Character is completely invisible in reconstruction. Just environment
