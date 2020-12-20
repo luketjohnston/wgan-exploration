@@ -9,14 +9,18 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
 
-from stepped_encoder import *
+from multi_encoder import *
 
-SAVE = 100
-BATCH_SIZE = 128
+SAVE = 400
+BATCH_SIZE = 16
+
+PRINT_GRADS = False
+
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
 model_savepath = os.path.join(dir_path, 'encoder.mod')
 loss_savepath = os.path.join(dir_path, 'loss.pickle')
+
 
 
 env = gym.make('MontezumaRevenge-v0')
@@ -41,9 +45,11 @@ with open(loss_savepath, "rb") as f:
 encoder = tf.saved_model.load(model_savepath)
 
 # TODO should I save and load the optimizer?
-opt = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE, epsilon=EPSILON)
-opt = tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE)
-opt = tf.keras.optimizers.SGD(learning_rate=0.000001)
+opt_bkgd  = tf.keras.optimizers.Adam(learning_rate=0.001, epsilon=1e-7)
+opt_conv = tf.keras.optimizers.SGD(learning_rate=0.01)
+
+#opt = tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE)
+#opt = tf.keras.optimizers.SGD(learning_rate=0.000001)
 
 
 
@@ -52,26 +58,6 @@ while True:
   b += 1
 
   batchlist = []
-
-  # Show what input looks like
-  #original = tf.squeeze(state[:,:,0])
-  #plt.imshow(original, cmap=cm.gray)
-  #plt.show()
-
-  #if b % 4000 == 3999:
-  #  mystate = tf.expand_dims(state, 0)
-  #  image = encoder.autoencode(mystate)
-  #  image = image[:,:,:,0]
-  #  image = tf.squeeze(image)
-  #  print(image[44,:])
- 
-  #  # original image show first
-  #  original = tf.squeeze(state[:,:,0])
-  #  plt.imshow(original, cmap=cm.gray)
-  #  #plt.show()
-
-  #  plt.imshow(image, cmap=cm.gray)
-  #  plt.show()
 
   for i in range(BATCH_SIZE):
     statelist.pop(0)
@@ -96,13 +82,32 @@ while True:
 
   env.reset()
   batch = tf.stack(batchlist, 0)
-  with tf.GradientTape() as tape:
-    loss = encoder.loss(batch)
-    all_vars = tape.watched_variables()
-    gradients = tape.gradient(loss, all_vars)
-    opt.apply_gradients(zip(gradients, all_vars))
-  print(loss)
-  losses += [loss]
+  with tf.GradientTape() as tape_bkgd, tf.GradientTape() as tape_adj:
+    tape_bkgd.watch(encoder.background_vars)
+    tape_adj.watch(encoder.adjustment_vars)
+
+    background_ms = encoder.encode_background(batch)
+    adjustment_ms = encoder.encode_adjustment(batch)
+    background_sample = encoder.sample(background_ms)
+    adjustment_sample = encoder.sample(adjustment_ms)
+    background = encoder.background(background_sample)
+
+    background_loss = encoder.background_loss(background, batch)
+    adjustment_loss = encoder.adjustment_loss(adjustment_sample, background, batch)
+
+  grad_back = tape_bkgd.gradient(background_loss, encoder.background_vars)
+  grad_adj = tape_adj.gradient(adjustment_loss, encoder.adjustment_vars)
+
+  opt_bkgd.apply_gradients(zip(grad_back, encoder.background_vars))
+  
+  if (background_loss < 110) and PRINT_GRADS:
+    opt_conv.apply_gradients(zip(grad_adj, encoder.adjustment_vars))
+    for x in grad_adj:
+      print(tf.reduce_max(x))
+
+  print([background_loss, adjustment_loss])
+  #print([background_loss])
+  losses += [[background_loss, adjustment_loss]]
 
     
 

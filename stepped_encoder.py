@@ -29,6 +29,7 @@ DEPTH = 4
 
 LEARNING_RATE = 0.000001
 EPSILON = 1e-3
+EPSILON = 1e-7
 ENCODING_SIZE = 256
 FILTERS = [8,8,8,8]
 CHANNELS = [32,64,64,64]
@@ -133,8 +134,7 @@ class Encoder(Model):
     return sample
 
   @tf.function(input_signature=(tf.TensorSpec(shape=[None, ENCODING_SIZE//2]),))
-  def decode(self, sample):
-
+  def background(self, sample):
     # first "step" is dense layer directly from encoding to output image,
     # and is stacked to produce the 4-timestep output. This allows the model
     # to easily learn the "background" image (the room)
@@ -144,7 +144,14 @@ class Encoder(Model):
     # TODO remove, this is just a test
     #background = self.decode_dense_vars[3]
     background = tf.reshape(background, [-1, WIDTH, HEIGHT, 1])
-    background = tf.repeat(background, 4, 3)
+    #background = tf.repeat(background, 4, 3)
+    background = tf.concat([background, background, background, background], -1)
+    return 255 * tf.nn.sigmoid(background)
+    
+
+  @tf.function(input_signature=(tf.TensorSpec(shape=[None, ENCODING_SIZE//2]),))
+  def adjustment(self, sample):
+
 
     # first linear layer
     x = tf.einsum('bi,io->bo', sample, self.decode_dense_vars[4]) + self.decode_dense_vars[5]
@@ -160,33 +167,45 @@ class Encoder(Model):
       x = tf.nn.conv2d(x, v, 1, 'SAME') # always stride 1 on decode? TODO
 
     x = tf.nn.sigmoid(x) # restrict logits to (0,1),
-    background = tf.nn.sigmoid(background)
-    x = x + background
 
     # TODO Should I instead restrict image inputs and outputs to (0,1) to compare, so loss is smaller?
     x = 255.0*x
     return x
 
-  @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),))
-  def loss(self, data):
-    # dimensions (1,2,3) include all but batch dimension
-    means_and_sigmas = self.encode(data)
+  @tf.function(input_signature=(tf.TensorSpec(shape=[None, ENCODING_SIZE//2]),))
+  def decode(self, sample):
+    background = self.background(sample)
+    adjustment = self.adjustment(sample)
+    print('here')
+    print(background.shape)
+    print(adjustment.shape)
+    return background + adjustment
+
+  @tf.function(input_signature=(tf.TensorSpec(shape=[None, ENCODING_SIZE//2]), 
+                                tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),
+                                tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH])))
+  def background_loss(self, sample, background, data):
+    background = self.background(sample)
+    return tf.reduce_mean(tf.keras.losses.MSE(data, background), (0,1,2))
+
+  @tf.function(input_signature=(tf.TensorSpec(shape=[None, ENCODING_SIZE//2]), 
+                                tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),
+                                tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH])))
+  def adjustment_loss(self, sample, background, data):
+    adjustment = self.adjustment(sample)
+    return tf.reduce_mean(tf.keras.losses.MSE(data - tf.stop_gradient(background), adjustment), (0,1,2))
+
+  @tf.function(input_signature=(tf.TensorSpec(shape=[None,ENCODING_SIZE//2, 2]),))
+  def kl_loss(self, means_and_sigmas):
     means = means_and_sigmas[:,:,0]
     sigmas = means_and_sigmas[:,:,1]
     mu2 = tf.math.pow(means, 2)
     sigma2 = tf.math.pow(sigmas, 2)
-    self.kl_divergence = -1.0 *  tf.reduce_sum((1.0 + tf.math.log(sigma2) - mu2 - sigma2))
+    kl_divergence = -1.0 *  tf.reduce_sum((1.0 + tf.math.log(sigma2) - mu2 - sigma2))
     # TODO: should we use tensorflow's kl divergence function?
     # source: https://arxiv.org/pdf/1312.6114.pdf (VAE paper)
-    sample = self.sample(means_and_sigmas)
-    decoding = self.decode(sample)
 
-    MSE_WEIGHT = 1.0
-    # TODO add this back in. For now, just want to get autoencoder working
-    KL_WEIGHT = 0.0
-    myloss =  MSE_WEIGHT * tf.reduce_mean(tf.keras.losses.MSE(data, decoding), (0,1,2)) + KL_WEIGHT * self.kl_divergence
-
-    return myloss
+    return kl_divergence
 
   @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),))
   def autoencode(self, state):
@@ -202,42 +221,42 @@ class Encoder(Model):
 if __name__ == '__main__':
   encoder = Encoder();
 
-  # have to do this once before saving model maybe?
-  env = gym.make('MontezumaRevenge-v0')
-  opt = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE, epsilon=EPSILON)
+  ## have to do this once before saving model maybe?
+  #env = gym.make('MontezumaRevenge-v0')
+  #opt = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE, epsilon=EPSILON)
 
-  state1 = env.reset()
-  state2 = env.step(env.action_space.sample())[0]
-  state3 = env.step(env.action_space.sample())[0]
-  state4 = env.step(env.action_space.sample())[0]
-  statelist = [state1, state2, state3, state4]
-  
-  statelist = [tf.image.rgb_to_grayscale(s) for s in statelist]
-  statelist = [tf.image.resize(s,(84,110)) for s in statelist] #TODO does method of downsampling matter?
-  
-  state = tf.stack(statelist, -1)
-  state = tf.squeeze(state)
+  #state1 = env.reset()
+  #state2 = env.step(env.action_space.sample())[0]
+  #state3 = env.step(env.action_space.sample())[0]
+  #state4 = env.step(env.action_space.sample())[0]
+  #statelist = [state1, state2, state3, state4]
+  #
+  #statelist = [tf.image.rgb_to_grayscale(s) for s in statelist]
+  #statelist = [tf.image.resize(s,(84,110)) for s in statelist] #TODO does method of downsampling matter?
+  #
+  #state = tf.stack(statelist, -1)
+  #state = tf.squeeze(state)
 
-  batchlist = []
-  for i in range(1):
-    statelist.pop(0)
-    observation = env.step(env.action_space.sample())[0]
+  #batchlist = []
+  #for i in range(1):
+  #  statelist.pop(0)
+  #  observation = env.step(env.action_space.sample())[0]
 
-    observation = tf.image.rgb_to_grayscale(observation)
-    observation = tf.image.resize(observation,(84,110)) #TODO does method of downsampling matter?
+  #  observation = tf.image.rgb_to_grayscale(observation)
+  #  observation = tf.image.resize(observation,(84,110)) #TODO does method of downsampling matter?
 
-    statelist.append(observation)
+  #  statelist.append(observation)
 
-    state = tf.stack(statelist, -1)
-    state = tf.squeeze(state)
-    batchlist.append(state)
+  #  state = tf.stack(statelist, -1)
+  #  state = tf.squeeze(state)
+  #  batchlist.append(state)
 
-  batch = tf.stack(batchlist, 0)
-  with tf.GradientTape() as tape:
-    loss = encoder.loss(batch)
-    all_vars = tape.watched_variables()
-    gradients = tape.gradient(loss, all_vars)
-    opt.apply_gradients(zip(gradients, all_vars))
+  #batch = tf.stack(batchlist, 0)
+  #with tf.GradientTape() as tape:
+  #  loss = encoder.loss(batch)
+  #  all_vars = tape.watched_variables()
+  #  gradients = tape.gradient(loss, all_vars)
+  #  opt.apply_gradients(zip(gradients, all_vars))
   
   print('Saving model...')
   tf.saved_model.save(encoder, model_savepath)

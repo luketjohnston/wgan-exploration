@@ -34,6 +34,11 @@ state = tf.squeeze(state)
 encoder = tf.saved_model.load(model_savepath)
 
 
+def get_first_image(output):
+    output = output[:,:,:,0]
+    return tf.squeeze(output)
+
+
 i = 0
 while (True):
   i += 1
@@ -53,21 +58,34 @@ while (True):
     
   if i % SHOW_STEP == 0:
 
-    fig, (ax1,ax2) = plt.subplots(1,2)
+    fig, (ax1,ax2,ax3,ax4,ax5) = plt.subplots(1,5)
     
     # Show what input looks like
     original = tf.squeeze(state[:,:,0])
     ax1.imshow(original, cmap=cm.gray)
 
     mystate = tf.expand_dims(state, 0)
-    print('mystate shape')
-    print(mystate.shape)
-    image = encoder.autoencode(mystate)
-    print('autoencoder shape')
-    print(image.shape)
-    image = image[:,:,:,0]
-    image = tf.squeeze(image)
-    print(image[44,:])
+    autoencoding = encoder(mystate)
+    image = get_first_image(autoencoding)
+
+    
+
+    background_encoding = encoder.encode_background(mystate)
+    sample = encoder.sample(background_encoding)
+    background_image = get_first_image(encoder.background(sample))
+    ax3.imshow(background_image, cmap=cm.gray)
+
+    adjustment_target = original - background_image
+    
+    ax4.imshow(adjustment_target, cmap=cm.gray)
+
+    
+    adjustment_encoding = encoder.encode_adjustment(mystate)
+    sample = encoder.sample(adjustment_encoding)
+    adjustment = get_first_image(encoder.adjustment(sample))
+    ax5.imshow(adjustment, cmap=cm.gray)
+
+
  
     ax2.imshow(image, cmap=cm.gray)
     plt.show()
