@@ -92,3 +92,20 @@ STRIDES = [2,2,1,1]
 
 
 230 LOSS doesn't have any state-specific information it seems. Character is completely invisible in reconstruction. Just environment
+
+
+What if we freeze any weights that have been trained and optimized, and then whenever the loss jumps, we add a new system to adjust for that?
+This doesn't mean freeze all weights - basically, train to get low hanging fruit (until stagnation), then freeze weights, make new architecture that constantly trains to try to improve (but don't solidify weights unless it actually makes a major improvement).
+
+
+
+FOR GROUPED CONVOLUTIONS:
+can use separable_conv2d with specific pointwise_filters (0 for irrelevant, 1 for relevant). Probably just better to 
+use a bunch of normal conv2d ops.
+-> just use tf map OR tf.vectorized_map?
+
+
+REGULARIZATION: regularizing weights to be small makes weights that aren't used trend toward 0,
+  which removes gradient? make regularize to magnitude 1 or something?
+
+MY GPU can store about 1e9 floats  if I've done the math correctly

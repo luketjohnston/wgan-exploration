@@ -4,6 +4,7 @@ import random
 import os
 from tensorflow.keras import Model
 import gym
+from contextlib import ExitStack
 from tf_agents.replay_buffers import tf_uniform_replay_buffer
 
 
@@ -38,6 +39,7 @@ dir_path = os.path.dirname(os.path.realpath(__file__))
 model_savepath = os.path.join(dir_path, 'encoder.mod')
 loss_savepath = os.path.join(dir_path, 'loss.pickle')
 
+
 # LOAD MNIST DATASET
 #mnist = tf.keras.datasets.mnist
 #(x_train, y_train), (x_test, y_test) = mnist.load_data()
@@ -54,9 +56,11 @@ with open(loss_savepath, "rb") as f:
 encoder = tf.saved_model.load(model_savepath)
 
 #opt_conv = tf.keras.optimizers.Adam(learning_rate=LR)
-opt_bkgd = tf.keras.optimizers.Adam()
+#opt_bkgd = tf.keras.optimizers.Adam()
 #opt_adj = tf.keras.optimizers.Adam(learning_rate=LR)
-opt_adj = tf.keras.optimizers.Adam()
+#opt_adj = tf.keras.optimizers.Adam()
+#opt = [tf.keras.optimizers.Adam() for _ in range(MODULES + 1)]
+opt = tf.keras.optimizers.Adam()
 
 # make environment
 env = gym.make('MontezumaRevenge-v0')
@@ -129,28 +133,27 @@ while True:
 
     batch = sample_batch(replay_buffer, BATCH_SIZE)
 
-    with tf.GradientTape() as tape_bkgd, tf.GradientTape() as tape_adj:
-      tape_bkgd.watch(encoder.background_vars)
-      tape_adj.watch(encoder.adjustment_vars)
+    with tf.GradientTape() as tape:
+    #with ExitStack() as stack:
+      #tapes = [stack.enter_context(tf.GradientTape(watch_accessed_variables=False)) for _ in range(MODULES + 1)]
+      #for i in range(MODULES):
+      #  tapes[i].watch(encoder.module_vars[i])
+      #tapes[-1].watch([encoder.background])
 
-      background = encoder.background(batch)
-      encoding = encoder.encode_adjustment(batch)
-      adjustment = encoder.decode_adjustment(encoding)
-      #background_sample = encoder.sample(background_ms)
-      #adjustment_sample = encoder.sample(adjustment_ms)
+      loss = encoder.loss_from_beginning(batch)
 
-      background_loss = encoder.background_loss(background, batch)
-      adjustment_loss = encoder.adjustment_loss(background, adjustment, batch)
+    grad = tape.gradient(loss, encoder.vars)
+    opt.apply_gradients(zip(grad, encoder.vars))
 
-    grad_back = tape_bkgd.gradient(background_loss, encoder.background_vars)
-    grad_adj = tape_adj.gradient(adjustment_loss, encoder.adjustment_vars)
-
-    opt_bkgd.apply_gradients(zip(grad_back, encoder.background_vars))
-    opt_adj.apply_gradients(zip(grad_adj, encoder.adjustment_vars))
+    #for i in range(MODULES):
+    #  grad = tapes[i].gradient(loss[i+1], encoder.module_vars[i])
+    #  opt[i].apply_gradients(zip(grad, encoder.vars))
+    #grad = tapes[MODULES].gradient(loss[0], [encoder.background])
+    #opt[MODULES].apply_gradients(zip(grad, [encoder.background]))
 
 
-    losses += [adjustment_loss]
-    print(adjustment_loss)
+    losses += [loss]
+    print(loss)
 
 
   print('finished experience replay, saving model')

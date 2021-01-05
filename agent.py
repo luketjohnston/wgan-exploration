@@ -10,7 +10,7 @@ import pickle
 #tfd = tfp.distributions
 
 
-# TODO it seems like the adjustment is predicting a state a bit into the future. Investigate this?
+# TODO it seems like the decoding is predicting a state a bit into the future. Investigate this?
 # perhaps it is predicting a constant state rather than a unique one for each of the 4 timesteps?
 
 
@@ -35,7 +35,9 @@ WIDTH = 84
 HEIGHT = 110
 DEPTH = 1
 
-ENCODING_SIZE = 64
+MODULES = 2
+
+ENCODING_SIZE = 4
 
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -43,10 +45,13 @@ model_savepath = os.path.join(dir_path, 'encoder.mod')
 loss_savepath = os.path.join(dir_path, 'loss.pickle')
 
 ENCODE_FILTER_SIZES = [3, 3, 3]
-ENCODE_CHANNELS =     [16,16,1]
+ENCODE_CHANNELS =     [16,16,16]
 
 DECODE_FILTER_SIZES = [3, 3, 16]
 DECODE_CHANNELS =     [16,16,DEPTH]
+
+
+HIDDEN_NEURONS = 32
 
 def getConvOutputSize(w,h,filtersize, channels, stride):
   # padding if necessary
@@ -59,135 +64,195 @@ def getConvOutputSize(w,h,filtersize, channels, stride):
 class Encoder(Model):
   def __init__(self):
     super(Encoder, self).__init__()
+    self.module_vars = []
     self.vars = []
 
 
 
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(1,WIDTH,HEIGHT,DEPTH,)), name='b0'))
+
+    for m in range(MODULES):
+      mvars = []
+
+      size = (WIDTH,HEIGHT,DEPTH)
+      for (f, c) in zip(ENCODE_FILTER_SIZES, ENCODE_CHANNELS):
+        # first conv layer
+        stride = 1
+        mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(f,f,size[2],c)), name='encode_conv'))
+        size = getConvOutputSize(size[0], size[1], f, c, stride)
 
 
-    size = (WIDTH,HEIGHT,DEPTH)
-    for (f, c) in zip(ENCODE_FILTER_SIZES, ENCODE_CHANNELS):
-      # first conv layer
-      stride = 1
-      self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(f,f,size[2],c)), name='encode_conv'))
-      size = getConvOutputSize(size[0], size[1], f, c, stride)
+      mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HEIGHT*WIDTH*ENCODE_CHANNELS[-1],HIDDEN_NEURONS)), name='w1'))
+      mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,)), name='b1'))
+      # need these "1" size axis in the b vars so that we can broadcast to the batch dimension
+
+      mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,ENCODING_SIZE)), name='w2'))
+      mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE,)), name='b2'))
+
+      # output layer
+
+      mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE,HIDDEN_NEURONS)), name='w3'))
+      mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,)), name='b3'))
+
+      mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,WIDTH*HEIGHT)), name='w4'))
+      mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(WIDTH*HEIGHT,)), name='b4'))
+
+      size = (WIDTH,HEIGHT,1)
+      for (f, c) in zip(DECODE_FILTER_SIZES, DECODE_CHANNELS):
+        # first conv layer
+        stride = 1
+        mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(f,f,size[2],c)), name='decode_conv'))
+        size = getConvOutputSize(size[0], size[1], f, c, stride)
+      self.module_vars += [mvars]
+      self.vars += mvars
 
 
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HEIGHT*WIDTH*ENCODE_CHANNELS[-1],ENCODING_SIZE)), name='w1'))
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE,)), name='b1'))
-
-    #self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE,ENCODING_SIZE)), name='w2'))
-    #self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE,)), name='b2'))
-
-    # output layer
-
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(ENCODING_SIZE,64)), name='w3'))
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(64,)), name='b3'))
-
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(64,WIDTH*HEIGHT)), name='w4'))
-    self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(WIDTH*HEIGHT,)), name='b4'))
-
-    size = (WIDTH,HEIGHT,1)
-    for (f, c) in zip(DECODE_FILTER_SIZES, DECODE_CHANNELS):
-      # first conv layer
-      stride = 1
-      self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(f,f,size[2],c)), name='decode_conv'))
-      size = getConvOutputSize(size[0], size[1], f, c, stride)
+    self.background = tf.Variable(tf.initializers.GlorotNormal()(shape=(1,WIDTH,HEIGHT,DEPTH,)), name='b0')
     
-
-
-    self.background_vars = self.vars[:1]
-    self.adjustment_vars = self.vars[1:]
+    self.vars += [self.background]
 
 
 
   @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),))
-  def background(self, x):
-    return self.vars[0]
+  def encode(self, data):
 
-  @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),))
-  def encode_adjustment(self, x):
+    encodings = []
+    for m in range(MODULES):
+      mvars = self.module_vars[m]
+      x = data
+      for i in range(len(ENCODE_CHANNELS)):
+        filt = mvars[i]
+        stride = 1
+        x = tf.nn.conv2d(x,filt,stride,'SAME',name=None)
+        x = tf.nn.leaky_relu(x)
 
-    for (f, c, v) in zip(ENCODE_FILTER_SIZES, ENCODE_CHANNELS, self.vars[1:1+len(ENCODE_FILTER_SIZES)]):
-      stride = 1
-      x = tf.nn.conv2d(x, v, stride, 'SAME', name=None)
+      # collapse last dimensions and apply first linear transformation
+      flattened_size = HEIGHT * WIDTH * ENCODE_CHANNELS[-1]
+      x = tf.reshape(x, [-1,flattened_size])
+
+      vi = len(ENCODE_FILTER_SIZES)
+      x = tf.einsum('bi,io->bo', x, mvars[vi]) + mvars[vi+1]
       x = tf.nn.leaky_relu(x)
-
-    # collapse last dimensions and apply first linear transformation
-    #flattened_size = self.conv_sizes[-1][0] * self.conv_sizes[-1][1] * self.conv_sizes[-1][2]
-    flattened_size = HEIGHT * WIDTH * ENCODE_CHANNELS[-1]
-    x = tf.reshape(x, [-1,flattened_size])
-
-    vi = 1+len(ENCODE_FILTER_SIZES)
-    x = tf.einsum('bi,io->bo', x, self.vars[vi]) + self.vars[vi+1]
-    #x = tf.nn.leaky_relu(x)
-    #x = tf.einsum('bi,io->bo', x, self.vars[vi+2]) + self.vars[vi+3]
-    #x = tf.nn.leaky_relu(x)
-    return x
-
-  @tf.function(input_signature=(tf.TensorSpec(shape=[None, ENCODING_SIZE]),))
-  def decode_adjustment(self, encoding):
-
-    # first linear layer
-    vi = 1 + len(ENCODE_FILTER_SIZES) + 2
-    x = tf.einsum('bi,io->bo', encoding, self.vars[vi]) + self.vars[vi+1]
-    x = tf.nn.leaky_relu(x)
-    x = tf.einsum('bi,io->bo', x, self.vars[vi+2]) + self.vars[vi+3]
-
-    x = tf.reshape(x, (-1,WIDTH,HEIGHT,1))
-
-    for (f, c, v) in zip(DECODE_FILTER_SIZES, DECODE_CHANNELS, self.vars[vi+4:vi+4+len(DECODE_FILTER_SIZES)]):
-      stride = 1
+      x = tf.einsum('bi,io->bo', x, mvars[vi+2]) + mvars[vi+3]
       x = tf.nn.leaky_relu(x)
-      x = tf.nn.conv2d(x, v, stride, 'SAME', name=None)
+      encodings.append(x)
+    return tf.stack(encodings)
+
+  @tf.function(input_signature=(tf.TensorSpec(shape=[MODULES,None, ENCODING_SIZE]),))
+  def decode(self, encoding):
+
+    decodings = []
+    for m in range(MODULES):
+      mvars = self.module_vars[m]
+      x = encoding[m,:,:]
+      # first linear layer
+      vi = len(ENCODE_FILTER_SIZES) + 4
+      x = tf.einsum('bi,io->bo', x, mvars[vi]) + mvars[vi+1]
+      x = tf.nn.leaky_relu(x)
+      x = tf.einsum('bi,io->bo', x, mvars[vi+2]) + mvars[vi+3]
+
+      # TODO leaky_relu here or no?
+
+      # TODO should we change the initial channels? probably...
+      x = tf.reshape(x, (-1,WIDTH,HEIGHT,1))
+
+      for i in range(len(DECODE_CHANNELS)):
+        filt = mvars[i + vi + 4]
+        stride = 1
+        x = tf.nn.conv2d(x,filt,stride,'SAME',name=None)
+        x = tf.nn.leaky_relu(x)
+        
+
+      # TODO with this version we're trying the sum before the sigmoid. 
+      # does our previous version with sum after the sigmoid work better?
+
+      # TODO previous versions didn't compute all gradients at once...
+      # optimized one module at a time basically. Better / worse?
+      x = tf.reshape(x, [-1, WIDTH, HEIGHT, DEPTH]) 
+
+      #x = 2 * tf.nn.sigmoid(x) - 1 # restrict logits to (-1,1),
+      x = tf.nn.sigmoid(x) # restrict logits to (-1,1),
+      decodings.append(x)
+
+    return tf.stack(decodings)
+
+  @tf.function(input_signature=(tf.TensorSpec(shape=[MODULES,None,WIDTH,HEIGHT,DEPTH]),))
+  def image(self, decoding):
+    return self.vars[-1] + tf.reduce_sum(decoding,0)
       
 
+  @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),))
+  def loss_from_beginning(self, data):
+    losses = []
+    reconstruction = self.vars[-1]
+    losses.append(tf.reduce_mean(tf.keras.losses.MSE(reconstruction, data)))
 
-    x = tf.reshape(x, [-1, WIDTH, HEIGHT, DEPTH]) 
-    x = 2 * tf.nn.sigmoid(x) - 1 # restrict logits to (-1,1),
+    for m in range(MODULES):
+      mvars = self.module_vars[m]
+      x = data
+      for i in range(len(ENCODE_CHANNELS)):
+        filt = mvars[i]
+        stride = 1
+        x = tf.nn.conv2d(x,filt,stride,'SAME',name=None)
+        x = tf.nn.leaky_relu(x)
 
+      # collapse last dimensions and apply first linear transformation
+      flattened_size = HEIGHT * WIDTH * ENCODE_CHANNELS[-1]
+      x = tf.reshape(x, [-1,flattened_size])
 
-    return x
+      vi = len(ENCODE_FILTER_SIZES)
+      x = tf.einsum('bi,io->bo', x, mvars[vi]) + mvars[vi+1]
+      x = tf.nn.leaky_relu(x)
+      x = tf.einsum('bi,io->bo', x, mvars[vi+2]) + mvars[vi+3]
+      x = tf.nn.leaky_relu(x)
 
-  @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]), 
-                                tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),
+      # DECODING
+      # first linear layer
+      vi = len(ENCODE_FILTER_SIZES) + 4
+      x = tf.einsum('bi,io->bo', x, mvars[vi]) + mvars[vi+1]
+      x = tf.nn.leaky_relu(x)
+      x = tf.einsum('bi,io->bo', x, mvars[vi+2]) + mvars[vi+3]
+
+      x = tf.reshape(x, (-1,WIDTH,HEIGHT,1))
+
+      for i in range(len(DECODE_CHANNELS)):
+        filt = mvars[i + vi + 4]
+        stride = 1
+        x = tf.nn.conv2d(x,filt,stride,'SAME',name=None)
+        x = tf.nn.leaky_relu(x)
+        
+      x = tf.reshape(x, [-1, WIDTH, HEIGHT, DEPTH]) 
+
+      # REALISTICALLY I should output a mask and a change,
+      # and mix accordingly, so never go outside range (0,1)
+      x = 2 * tf.nn.sigmoid(x) - 1 # restrict logits to (-1,1),
+      #x = tf.nn.sigmoid(x) # restrict logits to (-1,1),
+      reconstruction = tf.stop_gradient(reconstruction) + x
+      losses.append(tf.reduce_mean(tf.keras.losses.MSE(reconstruction,data)))
+
+    return losses
+
+  @tf.function(input_signature=(tf.TensorSpec(shape=[MODULES,None,WIDTH,HEIGHT,DEPTH]), 
                                 tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH])))
-  def adjustment_loss(self, background, adjustment, data):
-    # FOR SOME REASON, my attempts to learn the following without the "relu"
-    # in front don't work. Possibly because I had sigmoid at the end of decode_adjustment?
-    # a few attempts without the sigmoid also didn't work so not really sure what's going on
-    # UPDATE: with leaky relu activations in the rest of the network, we can now learn
-    # the absolute diff. TODO investigate?
+  def loss_from_decoding(self, decoding, data):
+    # TODO investigate leaky vs normal relu
 
+    def scanF(acc, elem):
+      return tf.stop_gradient(acc) + elem
 
-    diff = (data - tf.stop_gradient(background))
-    #diff = data - tf.stop_gradient(background)
-    loss = tf.reduce_mean(tf.keras.losses.MSE(adjustment, diff))
-    #loss = tf.reduce_mean(tf.keras.losses.MSE(adjustment, data))
-    return loss
+    init = tf.zeros(tf.shape(data))
+    approximations = tf.scan(scanF, decoding, initializer=init)
+    losses = tf.keras.losses.MSE(approximations, data)
 
+    return losses
 
-  @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]), 
-                                tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH])))
-  def background_loss(self, background, data):
-
-    # BCE works better than MAE
-    # MSE works about the same as BCE
-    #loss = tf.reduce_mean(tf.keras.losses.BinaryCrossentropy()(data, decoding))
-    #loss = tf.reduce_mean(tf.keras.losses.MAE(data, decoding))
-    loss = tf.reduce_mean(tf.keras.losses.MSE(background, data))
-    #adj_loss += reg
-    return loss
 
   @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),))
   def __call__(self, data):
-    background = self.background(data)
-    encoding = self.encode_adjustment(data)
-    adjustment = self.decode_adjustment(encoding)
+    encoding = self.encode(data)
+    decoding = self.decode(encoding)
+    image = self.image(decoding)
 
-    return background + adjustment
-    #return adjustment
+    return image
 
 
 if __name__ == '__main__':
