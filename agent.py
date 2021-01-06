@@ -25,6 +25,15 @@ physical_devices = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
 
+def restrict_unit_interval(x):
+  #return 1 - tf.exp(tf.pow(x,2))
+  
+  # the multiplier ensures the network won't just learn very large 
+  # or very small values for x. Keeps x in area where gradient is meaninful
+  #return tf.nn.sigmoid(x)
+  return tf.nn.sigmoid(x) * 1.1
+
+
 
 
 
@@ -48,7 +57,7 @@ ENCODE_FILTER_SIZES = [3, 3, 3]
 ENCODE_CHANNELS =     [16,16,16]
 
 DECODE_FILTER_SIZES = [3, 3, 16]
-DECODE_CHANNELS =     [16,16,DEPTH]
+DECODE_CHANNELS =     [16,16,DEPTH+1]
 
 
 HIDDEN_NEURONS = 32
@@ -162,22 +171,26 @@ class Encoder(Model):
         x = tf.nn.leaky_relu(x)
         
 
-      # TODO with this version we're trying the sum before the sigmoid. 
-      # does our previous version with sum after the sigmoid work better?
+      x = tf.reshape(x, [-1, WIDTH, HEIGHT, DECODE_CHANNELS[-1]]) 
 
-      # TODO previous versions didn't compute all gradients at once...
-      # optimized one module at a time basically. Better / worse?
-      x = tf.reshape(x, [-1, WIDTH, HEIGHT, DEPTH]) 
-
-      #x = 2 * tf.nn.sigmoid(x) - 1 # restrict logits to (-1,1),
-      x = tf.nn.sigmoid(x) # restrict logits to (-1,1),
+      #x = tf.nn.sigmoid(x)
+      x = restrict_unit_interval(x)
       decodings.append(x)
 
     return tf.stack(decodings)
 
-  @tf.function(input_signature=(tf.TensorSpec(shape=[MODULES,None,WIDTH,HEIGHT,DEPTH]),))
+  @tf.function(input_signature=(tf.TensorSpec(shape=[MODULES,None,WIDTH,HEIGHT,DECODE_CHANNELS[-1]]),))
   def image(self, decoding):
-    return self.vars[-1] + tf.reduce_sum(decoding,0)
+
+    def scanF(acc, elem):
+      x = tf.stop_gradient(acc) * (1 - elem[:,:,:,-1:]) + elem[:,:,:,:-1] * elem[:,:,:,-1:]
+      return tf.clip_by_value(x, 0., 1.)
+
+    init = tf.zeros((tf.shape(decoding)[1],WIDTH,HEIGHT,DEPTH))
+    init += self.background
+
+    image = tf.scan(scanF, decoding, initializer=init)
+    return image[-1,:,:,:,:]
       
 
   @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),))
@@ -220,30 +233,32 @@ class Encoder(Model):
         x = tf.nn.conv2d(x,filt,stride,'SAME',name=None)
         x = tf.nn.leaky_relu(x)
         
-      x = tf.reshape(x, [-1, WIDTH, HEIGHT, DEPTH]) 
+      x = tf.reshape(x, [-1, WIDTH, HEIGHT, DECODE_CHANNELS[-1]]) 
 
       # REALISTICALLY I should output a mask and a change,
       # and mix accordingly, so never go outside range (0,1)
-      x = 2 * tf.nn.sigmoid(x) - 1 # restrict logits to (-1,1),
+      #x = 2 * tf.nn.sigmoid(x) - 1 # restrict logits to (-1,1),
       #x = tf.nn.sigmoid(x) # restrict logits to (-1,1),
-      reconstruction = tf.stop_gradient(reconstruction) + x
+      x = restrict_unit_interval(x)
+      reconstruction = tf.stop_gradient(reconstruction * (1 - x[:,:,:,-1:])) + x[:,:,:,:-1] * x[:,:,:,-1:]
       losses.append(tf.reduce_mean(tf.keras.losses.MSE(reconstruction,data)))
+      reconstruction = tf.clip_by_value(reconstruction, 0., 1.)
 
     return losses
 
-  @tf.function(input_signature=(tf.TensorSpec(shape=[MODULES,None,WIDTH,HEIGHT,DEPTH]), 
-                                tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH])))
-  def loss_from_decoding(self, decoding, data):
-    # TODO investigate leaky vs normal relu
+  #@tf.function(input_signature=(tf.TensorSpec(shape=[MODULES,None,WIDTH,HEIGHT,DEPTH]), 
+  #                              tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH])))
+  #def loss_from_decoding(self, decoding, data):
+  #  # TODO investigate leaky vs normal relu
 
-    def scanF(acc, elem):
-      return tf.stop_gradient(acc) + elem
+  #  def scanF(acc, elem):
+  #    return tf.stop_gradient(acc) + elem
 
-    init = tf.zeros(tf.shape(data))
-    approximations = tf.scan(scanF, decoding, initializer=init)
-    losses = tf.keras.losses.MSE(approximations, data)
+  #  init = tf.zeros(tf.shape(data))
+  #  approximations = tf.scan(scanF, decoding, initializer=init)
+  #  losses = tf.keras.losses.MSE(approximations, data)
 
-    return losses
+  #  return losses
 
 
   @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),))

@@ -1,4 +1,7 @@
 
+import matplotlib
+matplotlib.use('tkagg')
+
 import tensorflow as tf
 import os
 from tensorflow.keras import Model
@@ -7,6 +10,7 @@ import gym
 
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+
 import numpy as np
 
 from agent import *
