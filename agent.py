@@ -31,7 +31,7 @@ def restrict_unit_interval(x):
   # the multiplier ensures the network won't just learn very large 
   # or very small values for x. Keeps x in area where gradient is meaninful
   #return tf.nn.sigmoid(x)
-  return tf.nn.sigmoid(x) * 1.1
+  return tf.nn.sigmoid(x) * 1.2 - 0.1
 
 
 
@@ -44,7 +44,7 @@ WIDTH = 84
 HEIGHT = 110
 DEPTH = 1
 
-MODULES = 2
+MODULES = 4
 
 ENCODING_SIZE = 4
 
@@ -183,7 +183,7 @@ class Encoder(Model):
   def image(self, decoding):
 
     def scanF(acc, elem):
-      x = tf.stop_gradient(acc) * (1 - elem[:,:,:,-1:]) + elem[:,:,:,:-1] * elem[:,:,:,-1:]
+      x = tf.stop_gradient(acc) * tf.clip_by_value(1 - elem[:,:,:,-1:],0.,1.) + elem[:,:,:,:-1] * elem[:,:,:,-1:]
       return tf.clip_by_value(x, 0., 1.)
 
     init = tf.zeros((tf.shape(decoding)[1],WIDTH,HEIGHT,DEPTH))
@@ -240,7 +240,8 @@ class Encoder(Model):
       #x = 2 * tf.nn.sigmoid(x) - 1 # restrict logits to (-1,1),
       #x = tf.nn.sigmoid(x) # restrict logits to (-1,1),
       x = restrict_unit_interval(x)
-      reconstruction = tf.stop_gradient(reconstruction * (1 - x[:,:,:,-1:])) + x[:,:,:,:-1] * x[:,:,:,-1:]
+      reconstruction = tf.stop_gradient(reconstruction * tf.clip_by_value(1 - x[:,:,:,-1:], 0., 1.))
+      reconstruction = reconstruction + x[:,:,:,:-1] * x[:,:,:,-1:]
       losses.append(tf.reduce_mean(tf.keras.losses.MSE(reconstruction,data)))
       reconstruction = tf.clip_by_value(reconstruction, 0., 1.)
 
