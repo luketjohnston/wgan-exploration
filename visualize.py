@@ -16,7 +16,6 @@ import numpy as np
 from agent import *
 
 
-
 # LOAD MNIST DATASET
 mnist = tf.keras.datasets.mnist
 (x_train, y_train), (x_test, y_test) = mnist.load_data()
@@ -26,10 +25,10 @@ train_ds = tf.data.Dataset.from_tensor_slices(
 test_ds = tf.data.Dataset.from_tensor_slices((x_test, y_test)).batch(1)
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
-model_savepath = os.path.join(dir_path, 'encoder.mod')
+model_savepath = os.path.join(dir_path, 'gan.mod')
 loss_savepath = os.path.join(dir_path, 'loss.pickle')
 
-encoder = tf.saved_model.load(model_savepath)
+gan = tf.saved_model.load(model_savepath)
 
 # make environment
 env = gym.make('MontezumaRevenge-v0')
@@ -58,19 +57,22 @@ while True:
   state = tf.expand_dims(state, 0)
 
 
-  fig, axes = plt.subplots(1,DEPTH*2)
+  fig, axes = plt.subplots(1,2)
   
-  # Show what input looks like
-  for i in range(DEPTH):
-    original = tf.squeeze(state)
-    axes[i].imshow(original, cmap=cm.gray)
+  original = tf.squeeze(state)
+  axes[0].imshow(original, cmap=cm.gray)
 
-  autoencoding = encoder(state)
+  image_approxs = tf.squeeze(gan.generate(1))
+  print(image_approxs.shape)
+  print(image_approxs)
 
+  axes[1].imshow(image_approxs, cmap=cm.gray)
+  #if MODULES == 1:
+  #  axes[1].imshow(image_approxs, cmap=cm.gray)
 
-  for i in range(DEPTH):
-    original = tf.squeeze(autoencoding[:,:,:,i])
-    axes[DEPTH + i].imshow(original, cmap=cm.gray)
+  #else:
+  #  for m in range(MODULES):
+  #    axes[m+1].imshow(image_approxs[m], cmap=cm.gray)
 
   
 
