@@ -25,22 +25,22 @@ DEPTH = 1
 MODULES = 1
 
 FEATURE_SIZE = 32
-HIDDEN_NEURONS=64
+HIDDEN_NEURONS=128
 
 DECODE_ACTIVATION = tf.nn.relu
 
 USE_BACKGROUND=True
 
 
-DECODE_FILTER_SIZES = [7, 5, 5, 5]
-DECODE_CHANNELS =     [32,64,128,DEPTH]
+DECODE_FILTER_SIZES = [9, 5, 5, 3]
+DECODE_CHANNELS =     [8,16,32,DEPTH]
 
 #DECODE_FILTER_SIZES = []
 #DECODE_CHANNELS =     [DEPTH + 1]
 
-CRIT_FILTER_SIZES = [5, 7, 7, 7, 7]
-CRIT_CHANNELS =     [32,64,64,128,128]
-CRIT_STRIDES =     [2,2,2,2,1]
+CRIT_FILTER_SIZES = [3, 5, 5, 7]
+CRIT_CHANNELS =     [8,16,32,32]
+CRIT_STRIDES =     [2,2,2,1]
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
 model_savepath = os.path.join(dir_path, 'gan.mod')
@@ -74,6 +74,7 @@ class GAN(Model):
       # first conv layer
       mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(f,f,size[2],c)), name='disc_conv'))
       size = getConvOutputSize(size[0], size[1], f, c, s)
+
 
     mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(size[0]*size[1]*size[2],HIDDEN_NEURONS)), name='cw3'))
     mvars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(HIDDEN_NEURONS,)), name='cb3'))
