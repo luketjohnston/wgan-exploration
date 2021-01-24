@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
 
-from agent import *
+from wgan import *
 
 SAVE_CYCLES = 100
 BATCH_SIZE = 16

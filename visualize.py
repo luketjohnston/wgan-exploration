@@ -13,7 +13,7 @@ import matplotlib.cm as cm
 
 import numpy as np
 
-from agent import *
+from wgan import *
 
 
 # LOAD MNIST DATASET
