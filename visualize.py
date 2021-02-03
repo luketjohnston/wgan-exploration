@@ -13,6 +13,7 @@ import matplotlib.cm as cm
 
 import numpy as np
 
+import agent
 from wgan import *
 
 
@@ -31,7 +32,7 @@ loss_savepath = os.path.join(dir_path, 'loss.pickle')
 gan = tf.saved_model.load(model_savepath)
 
 # make environment
-env = gym.make('MontezumaRevenge-v0')
+env = gym.make(agent.ENVIRONMENT)
 state1 = env.reset()
 state2 = env.step(env.action_space.sample())[0]
 state3 = env.step(env.action_space.sample())[0]

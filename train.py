@@ -27,6 +27,7 @@ from wgan import *
 SAVE_CYCLES = 100
 BATCH_SIZE = 16
 
+# TODO fix this, we only act once atm
 CYCLES_BETWEEN_ACTING = 10000
 
 CRITIC_BATCHES = 5

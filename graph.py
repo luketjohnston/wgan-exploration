@@ -8,14 +8,16 @@ from train import *
 dir_path = os.path.dirname(os.path.realpath(__file__))
 loss_savepath = os.path.join(dir_path, 'loss.pickle')
 
+import agent
+import wgan
 
-with open(loss_savepath, "rb") as f: 
-  (criticLosses, genLosses) = pickle.load(f)
+
+with open(agent.rewards_savepath, "rb") as f: 
+  rewards = pickle.load(f)
 
 
 fig, ax = plt.subplots()
-ax.plot(np.arange(0, len(genLosses), GEN_BATCHES / CRITIC_BATCHES), criticLosses)
-ax.plot(genLosses)
+ax.plot(rewards)
 ax.grid(True)
 start, end = ax.get_ylim()
 #ax.set_ylim(0,0.1)
