@@ -21,6 +21,7 @@ LOAD_SAVE = True
 #  pass
 
 
+
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
@@ -28,20 +29,27 @@ import numpy as np
 import agent
 import wgan
 
+
+USE_WGAN = False
+CLIP_REWARDS = True
 GAN_REWARD_WEIGHT = 0.01
 #LR = 0.00001 use this for fully connected
 LR = 0.001 # this is tf default
+LR = 0.0001 # this was used by RND paper
 SAVE_CYCLES = 1
 BATCH_SIZE = 16
-ENVS = 16
+ENVS = 128
 #STEPS_BETWEEN_TRAINING = 1200 * 16
 STEPS_BETWEEN_TRAINING = 128 * 8
-#STEPS_BETWEEN_TRAINING = 128
-EPOCHS = 3
-WGAN_TRAINING_CYCLES = 100
+STEPS_BETWEEN_TRAINING = 128
+MINIBATCHES = 16
+MINIBATCH_SIZE = ENVS * STEPS_BETWEEN_TRAINING // MINIBATCHES # must be a multiple of ENVS
+EPOCHS = 4
+WGAN_TRAINING_CYCLES = 10
 CRITIC_BATCHES = 5
 GEN_BATCHES = 1
 
+PARAM_UPDATES_PER_CYCLE = ENVS * STEPS_BETWEEN_TRAINING / MINIBATCH_SIZE * EPOCHS
 
 
 if __name__ == '__main__':
@@ -52,8 +60,9 @@ if __name__ == '__main__':
 
     with open(agent.loss_savepath, "rb") as f: 
       agentloss = pickle.load(f)
-    with open(wgan.loss_savepath, "rb") as f: 
-      wganloss = pickle.load(f)
+    if USE_WGAN:
+      with open(wgan.loss_savepath, "rb") as f: 
+        wganloss = pickle.load(f)
     with open(agent.rewards_savepath, "rb") as f:
       episode_rewards = pickle.load(f)
     
@@ -62,14 +71,16 @@ if __name__ == '__main__':
       #actor = tf.saved_model.load(agent.model_savepath)
       actor = tf.saved_model.load(agent.model_savepath)
       #sess.run(tf.compat.v1.global_variables_initializer())
-      gan = tf.saved_model.load(wgan.model_savepath)
+      if USE_WGAN:
+        gan = tf.saved_model.load(wgan.model_savepath)
     else:
       actor = agent.Agent()
-      gan = wgan.WGan()
+      if USE_WGAN: gan = wgan.WGan()
     
     agentOpt = tf.keras.optimizers.RMSprop(learning_rate = LR)
-    criticOpt = tf.keras.optimizers.RMSprop()
-    genOpt = tf.keras.optimizers.RMSprop()
+    if USE_WGAN:
+      criticOpt = tf.keras.optimizers.RMSprop()
+      genOpt = tf.keras.optimizers.RMSprop()
     
     envs = []
     states = []
@@ -139,8 +150,11 @@ if __name__ == '__main__':
           observation, reward, done, info = envs[i].step(actions[i])
           #tmp2 = timeit.default_timer()
           #steptime += tmp2 - tmp1
-          
           total_rewards[i] += reward
+
+          if CLIP_REWARDS:
+            if reward > 1: reward = 1.0
+            if reward < -1: reward = -1.0
           if (done): 
             #tmp1 = timeit.default_timer()
             envs[i].reset()
@@ -175,8 +189,8 @@ if __name__ == '__main__':
         #tmp1 = timeit.default_timer()
 
         # need to copy to CPU so we don't use all the GPU memory
-        #with tf.device('/device:CPU:0'):
-        if True:
+        with tf.device('/device:CPU:0'):
+        #if True:
           states_l.append(tf.identity(states))
           actions_l.append(tf.identity(actions))
           old_action_probs_l.append(tf.identity(old_action_probs))
@@ -201,9 +215,10 @@ if __name__ == '__main__':
       #print('values from one step:')
       #print(values)
 
-      # go through rewards and add wgan reward
-      for i in range(len(rewards_l)):
-        rewards_l[i] += GAN_REWARD_WEIGHT * tf.abs(gan.critic(states_l[i][:,:,:,:1])[0] * (1 - dones_l[i]))
+      if USE_WGAN:
+        # go through rewards and add wgan reward
+        for i in range(len(rewards_l)):
+          rewards_l[i] += GAN_REWARD_WEIGHT * tf.abs(gan.critic(states_l[i][:,:,:,:1])[0] * (1 - dones_l[i]))
 
       # compute value targets (discounted returns to end of episode (or end of training))
       rewards_l[-1] += (1 - dones_l[-1]) * actor.policy_and_value(states)[1]
@@ -214,44 +229,48 @@ if __name__ == '__main__':
 
       # TODO do we need wgan replay buffer or can we just use states?
 
-      print("Frames: %d" % (cycle * STEPS_BETWEEN_TRAINING * ENVS))
-      print('training WGAN')
+      print("Frames: %d" % ((cycle + 1) * STEPS_BETWEEN_TRAINING * ENVS))
+      print("Param updates: %d" % (cycle * PARAM_UPDATES_PER_CYCLE))
 
-      for c in range(WGAN_TRAINING_CYCLES):
-        for _ in range(CRITIC_BATCHES):
-          real_images = random.sample(states_l, 1)[0][:,:,:,:1]
-          with tf.GradientTape(watch_accessed_variables=False) as tape:
-            tape.watch(gan.critic_vars)
-            fake_images = gan.generate(BATCH_SIZE)
-            criticLoss = gan.criticLoss(real_images, fake_images)
-          grad = tape.gradient(criticLoss, gan.critic_vars)
-          criticOpt.apply_gradients(zip(grad, gan.critic_vars))
-          criticLosses += [criticLoss.numpy()]
-        for _ in range(GEN_BATCHES):
-          with tf.GradientTape(watch_accessed_variables=False) as tape:
-            tape.watch(gan.gen_vars)
-            genLoss = gan.genLoss(BATCH_SIZE)
-          grad = tape.gradient(genLoss, gan.gen_vars)
-          genOpt.apply_gradients(zip(grad, gan.gen_vars))
-          genLosses += [genLoss.numpy()]
-       
-        criticLossStr = '{:6f}, '.format(criticLoss.numpy())
-        genLossStr = '{:6f}, '.format(genLoss[0].numpy())
-        print('Critic and gen loss: ' + criticLossStr + genLossStr)
+      if USE_WGAN:
+        print('training WGAN')
+        for c in range(WGAN_TRAINING_CYCLES):
+          for _ in range(CRITIC_BATCHES):
+            real_images = random.sample(states_l, 1)[0][:,:,:,:1]
+            with tf.GradientTape(watch_accessed_variables=False) as tape:
+              tape.watch(gan.critic_vars)
+              fake_images = gan.generate(BATCH_SIZE)
+              criticLoss = gan.criticLoss(real_images, fake_images)
+            grad = tape.gradient(criticLoss, gan.critic_vars)
+            criticOpt.apply_gradients(zip(grad, gan.critic_vars))
+            criticLosses += [criticLoss.numpy()]
+          for _ in range(GEN_BATCHES):
+            with tf.GradientTape(watch_accessed_variables=False) as tape:
+              tape.watch(gan.gen_vars)
+              genLoss = gan.genLoss(BATCH_SIZE)
+            grad = tape.gradient(genLoss, gan.gen_vars)
+            genOpt.apply_gradients(zip(grad, gan.gen_vars))
+            genLosses += [genLoss.numpy()]
+         
+          criticLossStr = '{:6f}, '.format(criticLoss.numpy())
+          genLossStr = '{:6f}, '.format(genLoss[0].numpy())
+          print('Critic and gen loss: ' + criticLossStr + genLossStr)
     
       print('training ppo')
       indices = list(range(len(states_l)))
       for e in range(EPOCHS):
-        print('epoch ' + str(e))
+        #print('epoch ' + str(e))
         random.shuffle(indices)
-        for i in indices:
-        #for states, actions, old_action_probs, target_values in datapoints:
-          #print(i)
-          states, actions, old_action_probs, target_values = states_l[i], actions_l[i], old_action_probs_l[i], rewards_l[i]
+        for mb in range(MINIBATCHES):
+          starti = mb * MINIBATCH_SIZE // ENVS
+          endi = (mb+1) * MINIBATCH_SIZE // ENVS
+          inputs = [l[starti:endi] for l in [states_l, actions_l, old_action_probs_l, rewards_l]]
+          inputs = [tf.concat(inputl, 0) for inputl in inputs]
+          t_states, t_actions, t_old_action_probs, t_target_values = inputs # 't' prefix for train
     
           with tf.GradientTape(watch_accessed_variables=True) as tape:
     
-            loss_pve = actor.loss(states, actions, old_action_probs, target_values)
+            loss_pve = actor.loss(t_states, t_actions, t_old_action_probs, t_target_values)
             #print("{:6f}, {:6f}, {:6f}".format(loss_pve[0].numpy(), loss_pve[1].numpy(), loss_pve[2].numpy()))
 
             loss_str = ''.join('{:6f}, '.format(lossv) for lossv in loss_pve)
@@ -267,7 +286,7 @@ if __name__ == '__main__':
     
           agent_losses += [loss_pve]
           
-        print(loss_str)
+      print(loss_str)
          
         
     
@@ -276,13 +295,14 @@ if __name__ == '__main__':
       if not cycle % SAVE_CYCLES:
         print('Saving model...')
         tf.saved_model.save(actor, agent.model_savepath)
-        tf.saved_model.save(gan, wgan.model_savepath)
         with open(agent.loss_savepath, "wb") as fp:
           pickle.dump(agent_losses, fp)
-        with open(wgan.loss_savepath, "wb") as fp:
-          pickle.dump((criticLosses, genLosses), fp)
         with open(agent.rewards_savepath, "wb") as fp:
           pickle.dump(episode_rewards, fp)
+        if USE_WGAN:
+          tf.saved_model.save(gan, wgan.model_savepath)
+          with open(wgan.loss_savepath, "wb") as fp:
+            pickle.dump((criticLosses, genLosses), fp)
 
       
   

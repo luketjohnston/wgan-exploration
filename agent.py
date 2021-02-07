@@ -18,7 +18,7 @@ tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
 
 ENVIRONMENT = 'MontezumaRevenge-v0'
-#ENVIRONMENT = 'PongDeterministic-v4'
+ENVIRONMENT = 'PongDeterministic-v4'
 #ENVIRONMENT = 'CartPole-v1'
 
 env = gym.make(ENVIRONMENT)
@@ -50,8 +50,8 @@ FLOATSPEC = tf.TensorSpec([None],)
 BOOLSPEC = tf.TensorSpec([None], dtype=tf.bool)
 LOGITSPEC = tf.TensorSpec([None, ACTIONS])
 
-DISCOUNT = 0.99
-ENTROPY_WEIGHT = 0.01
+DISCOUNT = 0.999
+ENTROPY_WEIGHT = 0.001
 EPSILON = 0.1
 
 #ADD_ENTROPY = True
