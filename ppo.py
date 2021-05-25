@@ -1,4 +1,5 @@
 import tensorflow as tf
+#import multiprocessing
 import timeit
 from tensorflow.keras.layers import Conv2D, Flatten, Dense
 import random
@@ -8,6 +9,10 @@ from skimage.transform import resize
 from tensorflow.keras import Model
 import gym
 from contextlib import ExitStack
+
+
+# RIGHT NOW, parallel doesn't work well because have to split and 
+# rejoin at every timestep... that's my hypothesis anyway.
 
 
 
@@ -29,13 +34,14 @@ import numpy as np
 import agent
 import wgan
 
+OPTIMIZER = 'Adam' # or 'RMSprop'
 
 USE_WGAN = False
 CLIP_REWARDS = True
 GAN_REWARD_WEIGHT = 0.01
 #LR = 0.00001 use this for fully connected
 LR = 0.001 # this is tf default
-LR = 0.0001 # this was used by RND paper
+LR = 0.0001 # this was used by RND paper for Adam
 SAVE_CYCLES = 1
 BATCH_SIZE = 16
 ENVS = 128
@@ -77,7 +83,10 @@ if __name__ == '__main__':
       actor = agent.Agent()
       if USE_WGAN: gan = wgan.WGan()
     
-    agentOpt = tf.keras.optimizers.RMSprop(learning_rate = LR)
+    if OPTIMIZER == 'Adam':
+      agentOpt = tf.keras.optimizers.Adam(learning_rate = LR)
+    elif OPTIMIZER == 'RMSprop':
+      agentOpt = tf.keras.optimizers.RMSprop(learning_rate = LR)
     if USE_WGAN:
       criticOpt = tf.keras.optimizers.RMSprop()
       genOpt = tf.keras.optimizers.RMSprop()
@@ -133,64 +142,46 @@ if __name__ == '__main__':
       states_l, actions_l, old_action_probs_l, rewards_l, dones_l = [],[],[],[],[]
       print('acting')
 
+
       for step in range(STEPS_BETWEEN_TRAINING):
         #tmp1 = timeit.default_timer()
         policy_logits, values = actor.policy_and_value(states)
         actions, old_action_probs = actor.act(policy_logits)
         #tmp2 = timeit.default_timer()
-        #network_time += tmp2 - tmp1
-        #actions = sess.run(actions)
+        #print('policy: %s' % str(tmp2 - tmp1))
 
         next_states, rewards, dones = [], [], []
-        #print('step ' + str(step))
 
         for i in range(ENVS):
 
           #tmp1 = timeit.default_timer()
           observation, reward, done, info = envs[i].step(actions[i])
           #tmp2 = timeit.default_timer()
-          #steptime += tmp2 - tmp1
-          total_rewards[i] += reward
-
+          #print('step: %s' % str(tmp2 - tmp1))
           if CLIP_REWARDS:
             if reward > 1: reward = 1.0
             if reward < -1: reward = -1.0
-          if (done): 
-            #tmp1 = timeit.default_timer()
-            envs[i].reset()
-            #tmp2 = timeit.default_timer()
-            #steptime += tmp2 - tmp1
-            episode_rewards += [total_rewards[i]]
-            print("Finished episode %d, reward: %f" % (len(episode_rewards), total_rewards[i]))
-            total_rewards[i] = 0
-         
-          #tmp1 = timeit.default_timer()
+          total_rewards[i] += reward
 
           observation = tf.image.rgb_to_grayscale(observation)
           observation = tf.image.resize(observation,(84,110)) 
-          #tmp2 = timeit.default_timer()
           observation = observation / 255.0
-          #network_time += tmp2 - tmp1
-
-     
-
-          #tmp1 = timeit.default_timer()
+          if (done): 
+            envs[i].reset()
+            episode_rewards += [total_rewards[i]]
+            print("Finished episode %d, reward: %f" % (len(episode_rewards), total_rewards[i]))
+            total_rewards[i] = 0
           statelists[i] = statelists[i][1:]
           statelists[i].append(observation)
           state = tf.stack(statelists[i], -1)
           state = tf.squeeze(state)
-
-          next_states += [state]
-          rewards += [reward]
-          dones += [float(done)]
-          #tmp2 = timeit.default_timer()
-          #statelist_updates += tmp2 - tmp1
-
-        #tmp1 = timeit.default_timer()
+          next_states.append(state)
+          dones.append(float(done))
+          rewards.append(reward)
 
         # need to copy to CPU so we don't use all the GPU memory
-        with tf.device('/device:CPU:0'):
-        #if True:
+        #with tf.device('/device:CPU:0'):
+        if True:
           states_l.append(tf.identity(states))
           actions_l.append(tf.identity(actions))
           old_action_probs_l.append(tf.identity(old_action_probs))

@@ -10,11 +10,6 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
 
-
-# For some reason this is necessary to prevent error
-physical_devices = tf.config.experimental.list_physical_devices('GPU')
-tf.config.experimental.set_memory_growth(physical_devices[0], True)
-
 # let's work with input of size 84x110x4. DQN paper uses 84x84x4 because they crop the score, I'm not sure we should do this.
 # score lets us tell by the screen how far along we are in the game (for example if we have to return to a room we already 
 # have been to, a higher score would let us know it's the second time we've been there).
@@ -22,29 +17,44 @@ WIDTH = 84
 HEIGHT = 110
 DEPTH = 1
 
-MODULES = 1
+ENVIRONMENT = 'MontezumaRevenge-v0'
 
-FEATURE_SIZE = 32
+def makeEnv():
+  return gym.make(ENVIRONMENT)
+
+INPUT_SHAPE = [84,110,1]
+
+LR_CRITIC = 0.00001
+LR_GEN = 0.000001
+
+ADAM_PARAMS = {'learning_rate': LR_CRITIC, 'beta_1': 0, 'beta_2': 0.9}
+
+GRAD_LAMBDA = 10
+
+FEATURE_SIZE = 64
 HIDDEN_NEURONS=128
 
 DECODE_ACTIVATION = tf.nn.relu
 
-USE_BACKGROUND=True
-
-
 DECODE_FILTER_SIZES = [9, 5, 5, 3]
-DECODE_CHANNELS =     [8,16,32,DEPTH]
+DECODE_CHANNELS =     [32,32,32,DEPTH]
 
 #DECODE_FILTER_SIZES = []
 #DECODE_CHANNELS =     [DEPTH + 1]
 
-CRIT_FILTER_SIZES = [8, 4, 3]
+CRIT_FILTER_SIZES = [9,5,5]
 CRIT_CHANNELS =     [32,64,64]
 CRIT_STRIDES =     [4,2,1]
 
+
+INT_TYPE = tf.int32
+FLOAT_TYPE = tf.float32
+IMSPEC = tf.TensorSpec([None,WIDTH,HEIGHT,DEPTH], dtype=FLOAT_TYPE)
+INTSPEC = tf.TensorSpec([], dtype=INT_TYPE)
+
 dir_path = os.path.dirname(os.path.realpath(__file__))
-model_savepath = os.path.join(dir_path, 'gan.mod')
-loss_savepath = os.path.join(dir_path, 'ganloss.pickle')
+model_savepath = os.path.join(dir_path, 'gan_save')
+picklepath = os.path.join(model_savepath, 'gan.pickle')
 
 def restrict_unit_interval(x):
   #return 1 - tf.exp(tf.pow(x,2))
@@ -60,9 +70,9 @@ def getConvOutputSize(w,h,filtersize, channels, stride):
   h = math.ceil(h / stride)
   return w,h,channels
 
-class GAN(Model):
+class WGAN(Model):
   def __init__(self):
-    super(GAN, self).__init__()
+    super(WGAN, self).__init__()
     self.vars = []
     self.critic_vars = []
     self.gen_vars = []
@@ -101,44 +111,17 @@ class GAN(Model):
     self.gen_vars = mvars
     self.vars += mvars
 
+    opt = tf.keras.optimizers.Adam
+    self.critic_opt = opt(**ADAM_PARAMS)
+    self.gen_opt = opt(**ADAM_PARAMS)
 
-  @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH])))
-  def criticLoss(self, real_images, gen_images):
 
-
-    real_score = tf.reduce_sum(self.critic(real_images))
-    fake_score = tf.reduce_sum(self.critic(gen_images))
-
-    # to make computing gradients easier
-    total_score = real_score - fake_score # shape (None,)
-  
-    # apparently tf.gradients just computes as if total_score was summed. 
-    # if we want gradients with respect to multiple things, need to give
-    # a list as input.
-    real_grad_penalty = tf.gradients(total_score, real_images)[0]
-    real_grad_penalty = tf.reshape(real_grad_penalty, (-1, WIDTH * HEIGHT * DEPTH))
-    real_grad_penalty = tf.norm(real_grad_penalty, axis=-1, ord=2)
-    real_grad_penalty = tf.math.pow(real_grad_penalty-1.0, 2)
-    real_grad_penalty = tf.reduce_sum(real_grad_penalty)
-
-    fake_grad_penalty = tf.gradients(total_score, gen_images)[0]
-    fake_grad_penalty = tf.reshape(fake_grad_penalty, (-1, WIDTH * HEIGHT * DEPTH))
-    fake_grad_penalty = tf.norm(fake_grad_penalty, axis=-1, ord=2)
-    fake_grad_penalty = tf.math.pow(fake_grad_penalty-1.0, 2)
-    fake_grad_penalty = tf.reduce_sum(fake_grad_penalty)
-
-    grad_penalty = 10 * (real_grad_penalty + fake_grad_penalty)
-
-    loss = -1.0 * (real_score - fake_score) + grad_penalty
-
-    return tf.squeeze(loss)
 
   @tf.function(input_signature=(tf.TensorSpec(shape=None, dtype=tf.int32),))
   def genLoss(self, batch_size):
     images = self.generate(batch_size)
-    # images has shape [MODULES, batch] + imshape
     scores = self.critic(images)
-    loss = -1.0 * tf.reduce_sum(scores, 1)
+    loss = -1.0 * tf.reduce_mean(scores, 1) # why dim 1 here??
     
 
     return tf.squeeze(loss)
@@ -192,6 +175,59 @@ class GAN(Model):
 
     return x
 
+  @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH]),tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DEPTH])))
+  def criticLoss(self, real_images, gen_images):
+
+
+    real_score = tf.reduce_mean(self.critic(real_images))
+    fake_score = tf.reduce_mean(self.critic(gen_images))
+
+    eps = tf.random.uniform([], dtype=FLOAT_TYPE)
+    interpolated_images = eps * real_images + (1 - eps) * gen_images
+    interpolated_score = self.critic(interpolated_images)
+
+    grad_penalty = tf.gradients(interpolated_score, interpolated_images)[0]
+    grad_penalty = tf.sqrt(tf.reduce_sum(tf.square(grad_penalty), axis=[1,2,3]))
+    grad_penalty = tf.reduce_mean((grad_penalty - 1)**2)
+    grad_penalty *= GRAD_LAMBDA
+
+    loss = -1.0 * (real_score - fake_score) + grad_penalty
+
+    return tf.squeeze(loss), real_score, fake_score
+
+  @tf.function(input_signature=(IMSPEC,INTSPEC))
+  def trainBoth(self, real_images, num_fake):
+    gen_images = self.generate(num_fake)
+    critic_loss, real_score, fake_score = self.criticLoss(real_images, gen_images)
+    gen_loss = -1.0 * fake_score
+
+    critic_grads = tf.gradients(critic_loss, self.critic_vars)
+    self.critic_opt.apply_gradients(zip(critic_grads, self.critic_vars))
+
+    gen_grads = tf.gradients(gen_loss, self.gen_vars)
+    self.gen_opt.apply_gradients(zip(gen_grads, self.gen_vars))
+
+    return critic_loss, gen_loss
+
+  @tf.function(input_signature=(IMSPEC,INTSPEC))
+  def trainCritic(self, real_images, num_fake):
+    gen_images = self.generate(num_fake)
+    critic_loss, real_score, fake_score = self.criticLoss(real_images, gen_images)
+    gen_loss = -1.0 * fake_score
+    critic_grads = tf.gradients(critic_loss, self.critic_vars)
+    self.critic_opt.apply_gradients(zip(critic_grads, self.critic_vars))
+    return critic_loss
+
+
+  @tf.function(input_signature=(INTSPEC,))
+  def trainGen(self, num_fake):
+    gen_images = self.generate(num_fake)
+    scores = self.critic(gen_images)
+    gen_loss = -1.0 * tf.reduce_mean(scores)
+    gen_grads = tf.gradients(gen_loss, self.gen_vars)
+    self.gen_opt.apply_gradients(zip(gen_grads, self.gen_vars))
+    return gen_loss
+
 
 
   @tf.function(input_signature=(tf.TensorSpec(shape=[None,WIDTH,HEIGHT,DECODE_CHANNELS[-1]]),))
@@ -210,19 +246,13 @@ class GAN(Model):
 
 
 if __name__ == '__main__':
-  gan = GAN();
+  wgan = WGAN();
 
-  #print('running loss')
-  #encoder.loss_from_beginning(tf.zeros((16,84,110,1)))
-
-  
   print('Saving model...')
-  tf.saved_model.save(gan, model_savepath)
+  tf.saved_model.save(wgan, model_savepath)
 
-
-  criticLosses = []
-  genLosses = []
-  with open(loss_savepath, "wb") as fp:
-    pickle.dump((criticLosses, genLosses), fp)
+  save = {}
+  with open(picklepath, "wb") as fp:
+    pickle.dump(save, fp)
     
 

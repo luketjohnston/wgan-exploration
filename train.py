@@ -1,11 +1,8 @@
 import tensorflow as tf
-from tensorflow.keras.layers import Conv2D, Flatten, Dense
 import random
 import os
 from tensorflow.keras import Model
 import gym
-from contextlib import ExitStack
-from tf_agents.replay_buffers import tf_uniform_replay_buffer
 
 
 # TODO: probably need to update experience replay frequencies, 
@@ -15,7 +12,6 @@ from tf_agents.replay_buffers import tf_uniform_replay_buffer
 LOAD_SAVE = True
 if not LOAD_SAVE:
   tf.config.run_functions_eagerly(True)
-
 
 
 import matplotlib.pyplot as plt
