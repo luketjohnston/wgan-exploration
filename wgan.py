@@ -14,7 +14,7 @@ import numpy as np
 # score lets us tell by the screen how far along we are in the game (for example if we have to return to a room we already 
 # have been to, a higher score would let us know it's the second time we've been there).
 WIDTH = 84
-HEIGHT = 110
+HEIGHT = 84
 DEPTH = 1
 
 ENVIRONMENT = 'MontezumaRevenge-v0'

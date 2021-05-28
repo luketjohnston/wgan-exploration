@@ -156,12 +156,11 @@ if __name__ == '__main__':
             save['save_stats_every'] = SAVE_STATS_EVERY
             pickle.dump(save, fp)
 
-
+         
     except KeyboardInterrupt:
       for p in sample_procs:
         p.terminate()
       raise KeyboardInterrupt
-         
     
 
   
