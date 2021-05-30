@@ -9,13 +9,22 @@ import wgan
 
 with open(agent.picklepath, "rb") as f: 
   save = pickle.load(f)
-  y = save['loss_value']
+  episode_rewards = save['episode_rewards']
+  loss_policy = save['loss_policy']
+  loss_value = save['loss_value']
+  loss_entropy = save['loss_entropy']
 
 
-fig, ax = plt.subplots()
-ax.plot(y)
-ax.grid(True)
-start, end = ax.get_ylim()
+y = loss_entropy
+
+fig, [ax1,ax2,ax3,ax4] = plt.subplots(nrows=4)
+ax1.plot(loss_policy)
+ax2.plot(loss_value)
+ax3.plot(episode_rewards)
+ax4.plot(loss_entropy)
+
+#ax.grid(True)
+#start, end = ax.get_ylim()
 #ax.set_ylim(0,0.1)
 #ax.yaxis.set_ticks(np.arange(0, 0.1, 0.001))
 #ax.set_yscale('log')

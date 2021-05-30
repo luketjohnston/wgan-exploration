@@ -1,5 +1,6 @@
 import tensorflow as tf
 import multiprocessing as mp
+import matplotlib
 import timeit
 from tensorflow.keras.layers import Conv2D, Flatten, Dense
 import random
@@ -10,12 +11,14 @@ from tensorflow.keras import Model
 import gym
 from contextlib import ExitStack
 
+
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
 
 import agent
 import wgan
+from vecenv import VecEnv # not parallelized yet
 
 from atari_wrappers import WarpFrame, NoopResetEnv, EpisodicLifeEnv, ClipRewardEnv, FrameStack, ScaledFloatFrame, MaxAndSkipEnv, FireResetEnv
 
@@ -27,7 +30,7 @@ if tf.config.list_physical_devices('GPU'):
 
 def makeEnv():
   env = gym.make(agent.ENVIRONMENT)
-  if not agent.ENVIRONMENT == 'CartPole-v1':
+  if not agent.ENVIRONMENT == 'CartPole-v1' and not agent.ENVIRONMENT == 'Acrobot-v1':
     env = NoopResetEnv(env)
     env = MaxAndSkipEnv(env)
 
@@ -47,84 +50,75 @@ PROFILE = False
 USE_WGAN = False
 GAN_REWARD_WEIGHT = 0.01
 SAVE_CYCLES = 20
-#BATCH_SIZE = 16
 ENVS = agent.ENVS
 ROLLOUT_LEN = agent.ROLLOUT_LEN
 MINIBATCH_SIZE = agent.MINIBATCH_SIZE
 MINIBATCHES = ENVS * ROLLOUT_LEN // MINIBATCH_SIZE # must be multiple of 
+FRAMES_PER_CYCLE = ENVS * ROLLOUT_LEN
 EPOCHS = agent.EPOCHS
 WGAN_TRAINING_CYCLES = 1
 CRITIC_BATCHES = 20
 GEN_BATCHES = 1
 
-FRAMES_PER_CYCLE = ENVS * ROLLOUT_LEN
-
 PARAM_UPDATES_PER_CYCLE = MINIBATCHES * EPOCHS
 
-def actorProcess(env, state, cumulative_reward, actor):
-  states = np.zeros([ROLLOUT_LEN] + agent.INPUT_SHAPE)
-  rewards = np.zeros([ROLLOUT_LEN])
-  actions = np.zeros([ROLLOUT_LEN], dtype=np.int)
-  dones = np.zeros([ROLLOUT_LEN], dtype=np.bool)
-  value_ests = np.zeros([ROLLOUT_LEN])
-  act_log_probs = np.zeros([ROLLOUT_LEN])
 
-  episode_rewards = []
+''' 
+given vecenv and actor, 
+computes the generalized advantage estimate for a rollout of n steps.
 
-  for i in range(ROLLOUT_LEN):
-    states[i] = state
-    if not agent.ENVIRONMENT == 'CartPole-v1':
-      state = state._force()
-    policy_logits, value_est = actor.policy_and_value(np.expand_dims(state, 0))
-    action, act_log_prob = actor.act(policy_logits)
-    state,reward,done,info = env.step(action[0].numpy())
-    rewards[i] = reward
-    actions[i] = action
-    dones[i] = done
-    value_ests[i] = value_est
-    act_log_probs[i] = act_log_prob
-    cumulative_reward += reward
-    if done:     
-      state = env.reset()
-      episode_rewards += [cumulative_reward]
-      cumulative_reward = 0
+returns:
+[states, actions, dones, returns value_ests, act_log_probs], episode_rewards
 
-  advs = np.zeros((ROLLOUT_LEN,))
+episode_rewards is a list of total reward for any episodes that terminated during
+the rollout.
+'''
+def rollout_GAE(vecenv, n, actor):
 
-  # implementation follows https://github.com/openai/baselines/blob/ea25b9e8b234e6ee1bca43083f8f3cf974143998/baselines/ppo2/runner.py#L56-L65
-  for t in reversed(range(ROLLOUT_LEN)):
-    if t == ROLLOUT_LEN - 1:
-      nextnonterminal = 1.0 - done
-      nextvalue = value_est
-      next_adv = 0.0
-      #nextreturn = value_est
-    else:
-      nextnonterminal = 1.0 - dones[t+1]
-      nextvalue = value_ests[t+1]
-      #nextreturn = returns[t+1]
-    delta = rewards[t] + agent.DISCOUNT * nextvalue * nextnonterminal - value_ests[t]
-    next_adv = delta + agent.LAMBDA * agent.DISCOUNT * next_adv * nextnonterminal 
-    advs[t] = next_adv
-    #returns[t] = rewards[t] + agent.DISCOUNT * nextreturn * nextnonterminal
+  # + 1 to hold extra state after last transition, to use to get final one-step td estimate
+  states = np.zeros([n + 1, vecenv.nenvs] + agent.INPUT_SHAPE)
+  rewards = np.zeros([n, vecenv.nenvs])
+  actions = np.zeros([n, vecenv.nenvs], dtype=np.int)
+  dones = np.zeros([n, vecenv.nenvs], dtype=np.bool)
+  value_ests = np.zeros([n, vecenv.nenvs])
+  act_log_probs = np.zeros([n,vecenv.nenvs])
+  advs = np.zeros((n,vecenv.nenvs))
+
+  episode_scores = []
+
+  states[0] = vecenv.getStates()
+
+  for i in range(n):
+    policy_logits, value_ests[i] = actor.policy_and_value(vecenv.getStates())
+    actions[i], act_log_probs[i] = actor.act(policy_logits)
+    states[i+1], rewards[i], dones[i], ep_scores = vecenv.step(actions[i])
+    episode_scores += ep_scores
+
+  _, next_val = actor.policy_and_value(vecenv.getStates())
+  next_adv = 0.0
+
+  # compute returns and advs using Generalized Advantage Estimation
+  for t in reversed(range(n)):
+    nonterminal = (1 - dones[t])
+    delta = rewards[t] + agent.DISCOUNT * next_val * nonterminal - value_ests[t]
+    advs[t] = delta + agent.LAMBDA * agent.DISCOUNT * next_adv * nonterminal 
+    next_adv = advs[t]
+    next_val = value_ests[t]
+
   returns = advs + value_ests
+  state = states[-1,...] 
+  states = states[:-1,...]  # toss last state
 
-    
-  return (states, actions, dones, returns, value_ests, act_log_probs, state, cumulative_reward, episode_rewards)
-  
+  # reshape all the collected data into a single batch before returning
+  batch = [states, actions, returns, value_ests, act_log_probs]
+  for i,x in enumerate(batch):
+    batch[i] = np.reshape(x, (n*vecenv.nenvs,) + x.shape[2:])
+
+  return batch, episode_scores
+
 
 
 if __name__ == '__main__':
-
-  # need to spawn processes so they don't copy tensorflow state and try to do stuff on GPU
-  #mp.set_start_method('spawn')
-
-  loop_i = 0
-  if loop_i == 2 and PROFILE:
-    tf.profiler.experimental.start('logdir')
-  if loop_i == 4 and PROFILE:
-    tf.profiler.experimental.stop()
-  loop_i += 1;
-  
 
   with open(agent.picklepath, "rb") as f: 
     agentsave = pickle.load(f)
@@ -140,40 +134,22 @@ if __name__ == '__main__':
   else:
     actor = agent.Agent()
     if USE_WGAN: gan = wgan.WGan()
-  
-  envs = []
-  states = []
-  cumulative_rewards = []
 
-  # make environment
-  for i in range(ENVS):
-    env = makeEnv()
-    state = env.reset()
-    envs += [env]
-    cumulative_rewards += [0]
-    states.append(state)
+  vecenv = VecEnv(makeEnv, ENVS)
   
   cycle = 0
 
+  for cycle in range(0, agent.FRAMES // FRAMES_PER_CYCLE):
 
-  while True: 
-    if cycle * FRAMES_PER_CYCLE > agent.FRAMES:
-      break;
+    if cycle == 2 and PROFILE:
+      tf.profiler.experimental.start('logdir')
+    if cycle == 3 and PROFILE:
+      tf.profiler.experimental.stop()
 
+    rollout, episode_rewards = rollout_GAE(vecenv, ROLLOUT_LEN, actor)
+    #[states, actions, returns, value_ests, act_log_probs] = rollout
 
-    states_l, actions_l, dones_l, returns_l, value_ests_l, log_probs_l, next_states, next_cumulative_rewards = [],[],[],[],[],[],[],[]
-    data_lists = [states_l, actions_l, dones_l, returns_l, value_ests_l, log_probs_l, next_states, next_cumulative_rewards]
-    for (e,s,cr) in zip(envs, states, cumulative_rewards):
-      dataBatch = actorProcess(e,s,cr,actor)
-      for i,dl in enumerate(data_lists):
-        dl.append(dataBatch[i])
-      agentsave['episode_rewards'] += dataBatch[-1]
-
-    states, cumulative_rewards = (next_states, next_cumulative_rewards)
-
-    data_arrays = []
-    for dl in data_lists[:-2]:
-      data_arrays.append(np.concatenate(dl))
+    agentsave['episode_rewards'] += episode_rewards
 
     if len(agentsave['episode_rewards']) > 0:
       av_ep_rew = sum(agentsave['episode_rewards'][-100:]) / len(agentsave['episode_rewards'][-100:])
@@ -202,15 +178,12 @@ if __name__ == '__main__':
     total_datapoints = MINIBATCH_SIZE * MINIBATCHES
     indices = np.arange(total_datapoints)
     for e in range(EPOCHS):
-      #print('epoch ' + str(e))
       np.random.shuffle(indices)
       for mb_start in range(0,total_datapoints,MINIBATCH_SIZE):
         mb_indices = indices[mb_start:mb_start + MINIBATCH_SIZE]
-        inputs = [d[mb_indices,...] for d in data_arrays]
-        mb_states, mb_actions, mb_dones, mb_returns, mb_old_values, mb_log_action_probs = inputs 
+        inputs = [d[mb_indices,...] for d in rollout]
   
-        loss_pve = actor.train(mb_states, mb_actions, mb_returns, mb_old_values, mb_log_action_probs)
-        #print("{:6f}, {:6f}, {:6f}".format(loss_pve[0].numpy(), loss_pve[1].numpy(), loss_pve[2].numpy()))
+        loss_pve, grads, r, adv = actor.train(*inputs)
 
         loss_str = ''.join('{:6f}, '.format(lossv) for lossv in loss_pve)
   
@@ -219,18 +192,24 @@ if __name__ == '__main__':
         agentsave['loss_entropy'] += [loss_pve[2].numpy()]
         
     print(loss_str)
-       
+
+    #for v in actor.vars:
+    #  tf.print(tf.reduce_sum(tf.abs(v)))
+    #for g in grads:
+    #  tf.print(tf.reduce_max(tf.abs(g)))
       
   
   
     cycle += 1
     if not cycle % SAVE_CYCLES:
-    #if True: # save every time, because currently we get model by loading from disk on each actor process
       print('Saving model...')
       tf.saved_model.save(actor, agent.model_savepath)
+      tf.saved_model.save(actor, agent.backup_savepath)
       with open(agent.picklepath, "wb") as fp:
         pickle.dump(agentsave, fp)
       
+      with open(agent.picklepath_backup, "wb") as fp:
+        pickle.dump(agentsave, fp)
   
     
   
