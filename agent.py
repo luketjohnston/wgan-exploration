@@ -19,8 +19,8 @@ DEBUG = True
 
 # NOTE: need to use NoFrameskip versions of environments, since we are wraping
 # env with MaxAndSkipEnv wrapper in agent.
-ENVIRONMENT = 'MontezumaRevenge-v0'
-ENVIRONMENT = 'PongNoFrameskip-v4'
+ENVIRONMENT = 'MontezumaRevengeNoFrameskip-v4'
+#ENVIRONMENT = 'PongNoFrameskip-v4'
 #ENVIRONMENT = 'CartPole-v1'
 #ENVIRONMENT = 'Acrobot-v1'
 
@@ -29,10 +29,14 @@ SQRT2 = 2.0**0.5
 env = gym.make(ENVIRONMENT)
 ACTIONS = env.action_space.n
 
+INTRINSIC_REWARD_MULTIPLIER = 0.01
+
 CLIPNORM = 0.5
 # a higher epsilon prevents nans in gradient applications when parameters have very low variance
 ADAM_PARAMS = {'global_clipnorm': CLIPNORM, 'epsilon': 1e-5} 
 
+FLOAT_TYPE = tf.float32
+INT_TYPE = tf.int32
 
 if ENVIRONMENT == 'CartPole-v1':
   WIDTH,HEIGHT,DEPTH= (4,1,1)
@@ -49,7 +53,7 @@ if ENVIRONMENT == 'CartPole-v1':
   MINIBATCH_SIZE = 64
   VAL_LAYERS = [64,64]
   POL_LAYERS = [64,64]
-  IMSPEC = tf.TensorSpec([None, 4])
+  IMSPEC = tf.TensorSpec([None, 4], dtype=FLOAT_TYPE)
   ENTROPY_WEIGHT = 0.00
   EPSILON = 0.2
   EPOCHS = 10
@@ -70,7 +74,7 @@ elif ENVIRONMENT=='Acrobot-v1':
   INPUT_SHAPE = [6]
   FRAMES = 1000000
   MINIBATCH_SIZE = 64
-  IMSPEC = tf.TensorSpec([None, 6])
+  IMSPEC = tf.TensorSpec([None, 6], dtype=FLOAT_TYPE)
   ENTROPY_WEIGHT = 0.00
   EPSILON = 0.2
   EPOCHS = 10
@@ -83,7 +87,7 @@ else: # atari
   WIDTH,HEIGHT,DEPTH=(84,84,4)
   ACTIVATION = tf.nn.leaky_relu
   VALUE_LOSS_WEIGHT = 1 # PPO paper uses 1.0 for atari
-  ENVS = 8
+  ENVS = 32
   FILTER_SIZES = [8, 4,3]
   CHANNELS =     [16,32,32]
   STRIDES =     [4,2,1]
@@ -91,7 +95,7 @@ else: # atari
   MINIBATCH_SIZE = 32 * 8
   VAL_LAYERS = [256]
   POL_LAYERS = [256]
-  IMSPEC = tf.TensorSpec([None, WIDTH, HEIGHT, DEPTH])
+  IMSPEC = tf.TensorSpec([None, WIDTH, HEIGHT, DEPTH], dtype=FLOAT_TYPE)
   ENTROPY_WEIGHT = 0.01 # paper says 0.01, but that gives me deterministic policy, and diverges...
   EPSILON = 0.1
   EPOCHS = 4
@@ -102,17 +106,18 @@ else: # atari
   PADDING = 'SAME'
 
 
-DISCOUNT = 0.99
+INTRINSIC_DISCOUNT = 0.99
+EXTRINSIC_DISCOUNT = 0.999
 LAMBDA = 0.95 # for generalized advantage estimate
 
 
 ENT_EPSILON = 1e-7
 
 
-INTSPEC = tf.TensorSpec([None], dtype=tf.int64)
-FLOATSPEC = tf.TensorSpec([None],)
+INTSPEC = tf.TensorSpec([None], dtype=INT_TYPE)
+FLOATSPEC = tf.TensorSpec([None],dtype=FLOAT_TYPE)
 BOOLSPEC = tf.TensorSpec([None], dtype=tf.bool)
-LOGITSPEC = tf.TensorSpec([None, ACTIONS])
+LOGITSPEC = tf.TensorSpec([None, ACTIONS],dtype=FLOAT_TYPE)
 
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -144,21 +149,21 @@ class Agent(tf.Module):
     size = INPUT_SHAPE
     for (f, c, s) in zip(FILTER_SIZES, CHANNELS, STRIDES):
       # first conv layer
-      self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(f,f,size[2],c)), name='agent_conv'))
+      self.vars.append(tf.Variable(tf.initializers.GlorotNormal()(shape=(f,f,size[2],c),dtype=FLOAT_TYPE), name='agent_conv',dtype=FLOAT_TYPE))
       size = getConvOutputSize(size[0], size[1], f, c, s, padding='SAME')
 
     startsize = np.prod(size)
     size = startsize
-    for i,h in enumerate(VAL_LAYERS + [1]):
+    for i,h in enumerate(VAL_LAYERS + [2]): # 2 value head streams for intrinsic v extrinsic rewards
       gain = SQRT2 if i < len(VAL_LAYERS) else 1.0
-      self.valvars.append(tf.Variable(tf.initializers.Orthogonal(gain=gain)(shape=(size,h)), name='Value_w' + str(i)))
-      self.valvars.append(tf.Variable(tf.zeros_initializer()(shape=(h,)), name='Value_b' + str(i)))
+      self.valvars.append(tf.Variable(tf.initializers.Orthogonal(gain=gain)(shape=(size,h),dtype=FLOAT_TYPE), name='Value_w' + str(i), dtype=FLOAT_TYPE))
+      self.valvars.append(tf.Variable(tf.zeros_initializer()(shape=(h,),dtype=FLOAT_TYPE), name='Value_b' + str(i),dtype=FLOAT_TYPE))
       size = h
     size = startsize
     for i,h in enumerate(POL_LAYERS + [ACTIONS]):
       gain = SQRT2 if i < len(POL_LAYERS) else 0.01
-      self.polvars.append(tf.Variable(tf.initializers.Orthogonal(gain=gain)(shape=(size,h)), name='Policy_w' + str(i)))
-      self.polvars.append(tf.Variable(tf.zeros_initializer()(shape=(h,)), name='Policy_b' + str(i)))
+      self.polvars.append(tf.Variable(tf.initializers.Orthogonal(gain=gain)(shape=(size,h),dtype=FLOAT_TYPE), name='Policy_w' + str(i),dtype=FLOAT_TYPE))
+      self.polvars.append(tf.Variable(tf.zeros_initializer()(shape=(h,),dtype=FLOAT_TYPE), name='Policy_b' + str(i),dtype=FLOAT_TYPE))
       size = h
 
     self.lr = tf.keras.optimizers.schedules.PolynomialDecay(
@@ -206,9 +211,9 @@ class Agent(tf.Module):
       value = tf.einsum('ba,ah->bh', value,w) + b
       if i < len(VAL_LAYERS):
         value = ACTIVATION(value)
-    value = tf.squeeze(value, -1) # remove last dimension of value (size 1)
-    return value
-    
+    extrinsic_val = value[:,0]
+    intrinsic_val = value[:,1]
+    return extrinsic_val, intrinsic_val
 
 
   # TODO will the below compute the shared net twice?
@@ -216,8 +221,8 @@ class Agent(tf.Module):
   @tf.function(input_signature=(IMSPEC,))
   def policy_and_value(self, states):
     policy = self.policy(states)
-    value = self.value(states)
-    return policy, value
+    extrinsic_val, intrinsic_val = self.value(states)
+    return policy, extrinsic_val, intrinsic_val
 
   ''' returns the action and the probability of having taken that action '''
   @tf.function(input_signature=(LOGITSPEC,))
@@ -230,12 +235,13 @@ class Agent(tf.Module):
     return actions, action_probs
 
 
-  @tf.function(input_signature=(IMSPEC, INTSPEC, FLOATSPEC, FLOATSPEC, FLOATSPEC))
-  def train(self, states, actions, returns, old_values, old_action_probs):
-    advantage = (returns - old_values)
+  @tf.function(input_signature=(IMSPEC, INTSPEC, FLOATSPEC, FLOATSPEC, FLOATSPEC, FLOATSPEC))
+  def train(self, states, actions, extrinsic_returns, intrinsic_returns, old_values, old_action_probs):
+    advantage = (extrinsic_returns + intrinsic_returns - old_values)
     advantage = (advantage - tf.reduce_mean(advantage)) / (tf.math.reduce_std(advantage) + 1e-8)
 
-    policy_logits, value_est = self.policy_and_value(states)
+    #value_est has dim [batch, 2] for the 2 value heads (extrinsic and intrinsic)
+    policy_logits, intrinsic_val_est, extrinsic_val_est = self.policy_and_value(states)
 
     # learns significantly slower on cartpole with value fn clipping TODO
     # could this be an indiator to what is wrong? stable-baselines 3 also learns slower with 
@@ -246,7 +252,9 @@ class Agent(tf.Module):
     #vl2 = tf.square(clipped_value_est - returns)
     #value_loss = VALUE_LOSS_WEIGHT * tf.reduce_mean(tf.maximum(vl1, vl2))
 
-    value_loss = VALUE_LOSS_WEIGHT * tf.reduce_mean(tf.pow(value_est - returns, 2))
+    intrinsic_val_loss = tf.reduce_mean(tf.pow(intrinsic_val_est - intrinsic_returns,2))
+    extrinsic_val_loss = tf.reduce_mean(tf.pow(extrinsic_val_est - extrinsic_returns,2))
+    value_loss = VALUE_LOSS_WEIGHT * (intrinsic_val_loss + extrinsic_val_loss)
 
     probs = tf.nn.softmax(policy_logits)
     action_probs = tf.gather(probs, actions, batch_dims=1)
@@ -278,9 +286,14 @@ class Agent(tf.Module):
 
 
     if DEBUG:
+      tf.debugging.check_numerics(extrinsic_returns, message="checking ext ret")
+      tf.debugging.check_numerics(intrinsic_returns, message="checking int ret")
+      tf.debugging.check_numerics(old_values, message="checking old_values")
+
       tf.debugging.check_numerics(advantage, message="checking advantage")
       tf.debugging.check_numerics(policy_logits, message="checking policy_logits")
-      tf.debugging.check_numerics(value_est, message="checking value_est")
+      tf.debugging.check_numerics(intrinsic_val_est, message="checking intrinsic value_est")
+      tf.debugging.check_numerics(extrinsic_val_est, message="checking extrinsic value_est")
       tf.debugging.check_numerics(action_probs, message="checking action_probs")
       tf.debugging.check_numerics(r, message="checking r")
       tf.debugging.check_numerics(policy_probs, message="checking policy_probs")
@@ -293,7 +306,8 @@ class Agent(tf.Module):
 
       tf.debugging.assert_shapes([
         (advantage, ('N',)),
-        (value_est - returns, ('N',)),
+        (intrinsic_val_est, ('N')),
+        (extrinsic_val_est, ('N')),
         (action_probs, ('N',)),
         (r, ('N',)),
         (policy_probs, ('N',ACTIONS)),

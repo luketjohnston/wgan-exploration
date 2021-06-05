@@ -6,6 +6,7 @@ import tensorflow as tf
 import os
 from tensorflow.keras import Model
 import gym
+import argparse
 
 
 import matplotlib.pyplot as plt
@@ -15,38 +16,35 @@ import numpy as np
 
 import wgan
 
-with tf.device('/device:CPU:0'):
 
-  gan = tf.saved_model.load(wgan.model_savepath)
+
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser(description="explore with |wgan critic loss| intrinsic reward")
+  parser.add_argument('load_model', type=str, help="path to model to load")
+  args = parser.parse_args()
+
+  savepath = args.load_model
+  wgan_savepath = os.path.join(savepath, 'wgan')
+  actor_savepath = os.path.join(savepath, 'actor')
+
+  with tf.device('/device:CPU:0'):
   
-  # make environment
-  env = wgan.makeEnv()
-  state1 = env.reset()
-  
-  
-  while True:
-    observation = env.step(env.action_space.sample())[0]
-    observation = tf.image.rgb_to_grayscale(observation)
-    observation = tf.image.resize(observation,(84,110)) #TODO does method of downsampling matter?
-    observation = observation / 255.0
-  
-    fig, axes = plt.subplots(1,2)
+    #actor = tf.saved_model.load(actor_savepath)
+    wgan = tf.saved_model.load(wgan_savepath)
     
-    original = tf.squeeze(observation)
-    axes[0].imshow(original, cmap=cm.gray)
-  
-    image_approxs = tf.squeeze(gan.generate(1))
-  
-    axes[1].imshow(image_approxs, cmap=cm.gray)
-  
     
-    plt.show()
-      
-  
-  
-  
-  
-  env.close()
+    while True:
+      fig, axes = plt.subplots(1,2)
+      image_approxs = tf.squeeze(wgan.generate(2))
+      axes[0].imshow(image_approxs[0], cmap=cm.gray)
+      axes[1].imshow(image_approxs[1], cmap=cm.gray)
+      plt.show()
+        
+    
+    
+    
+    
+    env.close()
   
   
   
