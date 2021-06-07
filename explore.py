@@ -30,7 +30,7 @@ from atari_wrappers import WarpFrame, NoopResetEnv, EpisodicLifeEnv, ClipRewardE
 # makes replay buffer smaller so it doesn't take so long to fill it.
 # turn off when not debugging.
 QUICKTEST = False
-TEST_ONLY_WGAN = True
+TEST_ONLY_WGAN = False
 
 INIT_BUFFER_FILE = 'random_policy_replay_buffer.npy'
 
@@ -53,10 +53,8 @@ def makeEnv():
 # only run PPO training if wgan critic loss is higher than this threshold
 CRITIC_THRESHOLD_FOR_PPO = -100000
 # testing with only wgan training rn
-INITIAL_WGAN_TRAINING_CYCLES = 1000000
+INITIAL_WGAN_TRAINING_CYCLES = 200
 
-# 2**18 is the largest my ram can handle currently
-# seems too low, TODO optimize
 WGAN_BUFFER_SIZE = 2**20
 if QUICKTEST:
   WGAN_BUFFER_SIZE = 2**14
@@ -74,7 +72,7 @@ MINIBATCHES = ENVS * ROLLOUT_LEN // MINIBATCH_SIZE # must be multiple of
 FRAMES_PER_CYCLE = ENVS * ROLLOUT_LEN
 EPOCHS = agent.EPOCHS
 WGAN_BATCH_SIZE = 64
-WGAN_TRAINING_CYCLES = 1
+WGAN_TRAINING_CYCLES = 3
 CRITIC_BATCHES = 20
 GEN_BATCHES = 1
 PARAM_UPDATES_PER_CYCLE = MINIBATCHES * EPOCHS
@@ -248,7 +246,7 @@ if __name__ == '__main__':
   def getIntrinsicReward(states):
     # TODO do we want the first or last stacked frame?
     scores = gan.critic(states[...,-1:]) # last index is time index.
-    return tf.abs(scores) * INTRINSIC_REWARD_MULTIPLIER
+    return -1 * scores * INTRINSIC_REWARD_MULTIPLIER
 
   vecenv = VecEnv(makeEnv, ENVS)
   rms = RunningMeanStd()
@@ -320,7 +318,7 @@ if __name__ == '__main__':
       print('critic, gen: ' + loss_str)
        
   
-    if TRAIN_PPO and critic_loss > CRITIC_THRESHOLD_FOR_PPO and cycle > INITIAL_WGAN_TRAINING_CYCLES:
+    if TRAIN_PPO and critic_loss > CRITIC_THRESHOLD_FOR_PPO and save['wgan_cycles'] > INITIAL_WGAN_TRAINING_CYCLES:
       save['framecount'] += ROLLOUT_LEN * vecenv.nenvs
       save['ppo_iters'] += 1
       rollout, episode_rewards = getRollout(vecenv, ROLLOUT_LEN, actor, getIntrinsicReward, rms)

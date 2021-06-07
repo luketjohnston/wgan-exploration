@@ -96,7 +96,7 @@ else: # atari
   VAL_LAYERS = [256]
   POL_LAYERS = [256]
   IMSPEC = tf.TensorSpec([None, WIDTH, HEIGHT, DEPTH], dtype=FLOAT_TYPE)
-  ENTROPY_WEIGHT = 0.01 # paper says 0.01, but that gives me deterministic policy, and diverges...
+  ENTROPY_WEIGHT = 0.01 
   EPSILON = 0.1
   EPOCHS = 4
   ROLLOUT_LEN = 128

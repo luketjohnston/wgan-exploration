@@ -10,8 +10,10 @@ import numpy as np
 
 DEPTH = 1
 
-LR_CRITIC = 0.00002
-LR_GEN = LR_CRITIC 
+USE_BATCH_NORM = False
+
+LR_CRITIC = 0.001
+LR_GEN = LR_CRITIC
 
 ADAM_PARAMS = {'learning_rate': LR_CRITIC, 'beta_1': 0, 'beta_2': 0.9}
 
@@ -123,11 +125,13 @@ class Generator(tf.keras.Model):
     # uniform seems to work slightly better than normal on mnist
     x = tf.random.uniform([num_images, FEATURE_SIZE],-1,1) 
     for layer, bn in zip(self.dense, self.denseBN):
-      x = bn(layer(x), training=is_training)
+      x = layer(x)
+      if USE_BATCH_NORM: 
+        x = bn(x, training=is_training)
     x = tf.reshape(x, [-1] + DECODE_IN_SHAPE)
     for i,conv_transpose in enumerate(self.convT):
       x = conv_transpose(x)
-      if i < len(self.convT) - 1:
+      if i < len(self.convT) - 1 and USE_BATCH_NORM:
         x = self.convT_BN[i](x, training=is_training)
     return x
 
@@ -142,7 +146,7 @@ class WGAN(Model):
 
   @tf.function(input_signature=(IMSPEC,INTSPEC))
   def trainCritic(self, real_images, num_fake):
-    gen_images = self.gen.call(num_fake)
+    gen_images = self.gen(num_fake,True)
     critic_loss, real_score, fake_score = self.criticLoss(real_images, gen_images)
     critic_grads = tf.gradients(critic_loss, self.critic.trainable_weights)
     self.critic.opt.apply_gradients(zip(critic_grads, self.critic.trainable_weights))
@@ -151,7 +155,7 @@ class WGAN(Model):
 
   @tf.function(input_signature=(INTSPEC,))
   def trainGen(self, num_fake):
-    gen_images = self.gen.call(num_fake)
+    gen_images = self.gen(num_fake,True)
     scores = self.critic.call(gen_images)
     gen_loss = -1.0 * tf.reduce_mean(scores)
     gen_grads = tf.gradients(gen_loss, self.gen.trainable_weights)
@@ -185,7 +189,7 @@ class WGAN(Model):
 
   @tf.function(input_signature=(INTSPEC,))
   def generate(self, num_images):
-    return self.gen(num_images)
+    return self.gen(num_images, False)
 
   @tf.function(input_signature=(IMSPEC,))
   def score(self, images):
