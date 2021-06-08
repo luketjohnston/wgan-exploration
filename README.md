@@ -7,7 +7,7 @@ to find initial (and frontier) rewards don't perform well.
 One strategy to solve this is **intrinsic rewards** - using some additional "fake" rewards
 beyond those directly supplied by the environment to train the RL agent. For example, if the
 agent receives intrinsic rewards for reaching states that it has not encountered often, then
-it can learn to explore more efficiently than a random search. TODO cite?
+it can learn to explore more efficiently than a random search. 
 
 One difficulty of the above approach (rewarding seldom seen states) is: how do we know how many
 times the agent has visited a state? In environments with large state spaces, it is infeasible
@@ -20,7 +20,7 @@ pixel density model is used to estimate *pseudo-counts* for states.
 In this project, my initial idea was to use autoencoder reconstruction loss as an intrinsic reward,
 with the idea being that if the autoencoder can't reconstruct a state, it probably means the
 autoencoder hasn't been trained on similar states very often, so it would work as a proxy for
-state visitation count. However, the excellent paper "Exploration by Random Network Distillation" [1]
+state visitation count. However, the excellent paper "Exploration by Random Network Distillation" [2]
 has done that already so I decided to try
 a different but similar approach: train a WGAN on states from the environment, and then
 use an intrinsic reward of *the absolute value of the critic score*. The idea is that 
@@ -62,7 +62,7 @@ locally high intrinsic rewards. That "safe" area would change as training progre
 but it never moved past the "dangerous" areas of the environment (like the rolling skull at the bottom of 
 the first room). 
 
-In [1], intrinsic and extrinsic rewards are modeled with two distinct value heads, and intrinsic and 
+In [2], intrinsic and extrinsic rewards are modeled with two distinct value heads, and intrinsic and 
 extrinsic GAEs are computed separately. This allows the rollouts of intrinsic and extrinsic
 rewards to be treated differently - specifically, they do not terminate intrinsic reward rollout
 on episode termination. Intrinsic rewards "roll over" from one episode to another, so they don't disincentivize
@@ -89,7 +89,7 @@ more elegant solution to this problem in my opinion. I may try to implement that
 a lot of the work in this project already.
 
 Lastly, it is worth noting that this algorithm may depend heavily on how often the WGAN is trained, compared to
-the PPO agent.
+the PPO agent, and furthermore how much the WGAN critic is trained in comparison to the generator.
 
 TODO add some videos of the different learned policies
 TODO potentially try the last idea for intrinsic reward (MSE of critic score from its own rolling average).
